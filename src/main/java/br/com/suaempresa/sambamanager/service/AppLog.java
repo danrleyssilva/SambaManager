@@ -19,7 +19,7 @@ public final class AppLog {
         write("INFO", message);
     }
 
-    public static synchronized void error(String message, Exception exception) {
+    public static synchronized void error(String message, Throwable exception) {
         write("ERROR", message + " | " + exception.getClass().getSimpleName() + ": " + exception.getMessage());
     }
 

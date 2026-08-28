@@ -107,7 +107,7 @@ public class SambaManagerApp extends Application {
                         : accessible.size() + " pasta(s) disponível(is) em " + config.server());
             });
             task.setOnFailed(failed -> {
-                AppLog.error("Falha na verificação de permissões.", (Exception) task.getException());
+                AppLog.error("Falha na verificação de permissões.", task.getException());
                 enter.setDisable(false);
                 status.setText("Não foi possível verificar as permissões.");
                 showError(task.getException().getMessage());
@@ -140,7 +140,7 @@ public class SambaManagerApp extends Application {
                 status.setText("Mapeamento concluído: " + String.join(", ", task.getValue()));
             });
             task.setOnFailed(failed -> {
-                AppLog.error("Falha no mapeamento.", (Exception) task.getException());
+                AppLog.error("Falha no mapeamento.", task.getException());
                 map.setDisable(false);
                 refresh.setDisable(false);
                 password.clear();
@@ -179,7 +179,7 @@ public class SambaManagerApp extends Application {
                 status.setText("Mapeamentos atualizados: " + String.join(", ", task.getValue()));
             });
             task.setOnFailed(failed -> {
-                AppLog.error("Falha na atualização dos mapeamentos.", (Exception) task.getException());
+                AppLog.error("Falha na atualização dos mapeamentos.", task.getException());
                 map.setDisable(false);
                 refresh.setDisable(false);
                 password.clear();
@@ -194,8 +194,8 @@ public class SambaManagerApp extends Application {
         BorderPane root = new BorderPane(content);
         root.setTop(new VBox(12, new Label("Gerenciador de Acesso Samba"), login, new HBox(10, enter, status)));
         root.setPadding(new Insets(18));
-        stage.setTitle("Samba Manager");
-        stage.setScene(new Scene(root, 620, 560));
+        stage.setTitle("Royal Server Access");
+        stage.setScene(new Scene(root, 400, 560));
         stage.show();
     }
 
@@ -265,7 +265,7 @@ public class SambaManagerApp extends Application {
             alert.showAndWait();
         });
         task.setOnFailed(event -> {
-            AppLog.error("Falha na alteração de senha do usuário " + username + ".", (Exception) task.getException());
+            AppLog.error("Falha na alteração de senha do usuário " + username + ".", task.getException());
             status.setText("Não foi possível alterar a senha.");
             showError(task.getException().getMessage());
         });

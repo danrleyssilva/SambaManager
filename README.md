@@ -17,6 +17,8 @@ cd SambaManager
 mvn javafx:run
 ```
 
+Ao gerar o executável com `jpackage`, inclua também o módulo `java.net.http` em `--add-modules`.
+
 Os compartilhamentos e o IP do servidor ficam em `src/main/resources/samba.properties`.
 
 Antes de gerar uma versão para distribuição, copie a CA pública do servidor para
