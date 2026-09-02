@@ -67,15 +67,18 @@ public class SambaManagerApp extends Application {
             shares.add(box, index % 2, index / 2);
         }
 
-        Button map = new Button("Mapear selecionadas");
+        Button map = new Button("Mapear Pastas");
         map.setDisable(true);
-        Button refresh = new Button("Atualizar mapeamentos");
+        Button refresh = new Button("Atualizar Pastas");
+        refresh.setVisible(false);
+        refresh.setManaged(false);
         refresh.setDisable(true);
         Button changePassword = new Button("Alterar senha");
         ScrollPane shareScroll = new ScrollPane(shares);
         shareScroll.setFitToWidth(true);
         shareScroll.setPrefViewportHeight(300);
-        VBox content = new VBox(12, new Label("Compartilhamentos disponíveis"), shareScroll, new HBox(10, map, refresh, changePassword));
+        VBox content = new VBox(12, new Label("Compartilhamentos disponíveis"), shareScroll,
+                new HBox(10, map, refresh, changePassword));
         content.setDisable(true);
 
         enter.setOnAction(event -> {
@@ -91,12 +94,14 @@ public class SambaManagerApp extends Application {
             Task<List<String>> task = new Task<>() {
                 @Override
                 protected List<String> call() throws Exception {
-                    return mappingService.checkAccessibleShares(config.server(), currentUser, currentPassword, config.shares());
+                    return mappingService.checkAccessibleShares(config.server(), currentUser, currentPassword,
+                            config.shares());
                 }
             };
             task.setOnSucceeded(done -> {
                 List<String> accessible = task.getValue();
-                AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - " + String.join(", ", accessible));
+                AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - "
+                        + String.join(", ", accessible));
                 shareBoxes.forEach(box -> box.setSelected(accessible.contains(box.getText())));
                 content.setDisable(false);
                 map.setDisable(accessible.isEmpty());
@@ -105,6 +110,7 @@ public class SambaManagerApp extends Application {
                 status.setText(accessible.isEmpty()
                         ? "Nenhuma pasta disponível para este usuário."
                         : accessible.size() + " pasta(s) disponível(is) em " + config.server());
+
             });
             task.setOnFailed(failed -> {
                 AppLog.error("Falha na verificação de permissões.", task.getException());
@@ -137,7 +143,8 @@ public class SambaManagerApp extends Application {
                 map.setDisable(false);
                 refresh.setDisable(false);
                 password.clear();
-                status.setText("Mapeamento concluído: " + String.join(", ", task.getValue()));
+                // status.setText("Mapeamento concluído: " + String.join(", ", task.getValue())); 
+                status.setText("Mapeamento concluído: ");
             });
             task.setOnFailed(failed -> {
                 AppLog.error("Falha no mapeamento.", task.getException());
@@ -246,7 +253,8 @@ public class SambaManagerApp extends Application {
             }
         });
         Optional<ButtonType> choice = dialog.showAndWait();
-        if (choice.isEmpty() || choice.get() != submit) return;
+        if (choice.isEmpty() || choice.get() != submit)
+            return;
         char[] oldPassword = current.getText().toCharArray();
         char[] newPassword = next.getText().toCharArray();
         status.setText("Alterando senha…");
