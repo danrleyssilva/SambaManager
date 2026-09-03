@@ -22,9 +22,9 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
-import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
@@ -58,28 +58,54 @@ public class SambaManagerApp extends Application {
         Label status = new Label("Servidor: " + config.server());
 
         GridPane shares = new GridPane();
-        shares.setHgap(38);
-        shares.setVgap(7);
+        shares.setHgap(26);
+        shares.setVgap(8);
+        shares.setPadding(new Insets(2, 0, 2, 0));
         for (int index = 0; index < config.shares().size(); index++) {
             String share = config.shares().get(index);
-            CheckBox box = new CheckBox(share);
+            CheckBox box = new CheckBox();
+            box.setUserData(share);
+            // Apenas informa o acesso encontrado; a seleção não é editável pelo usuário.
+            // Mantemos o controle visualmente ativo para o texto não ficar acinzentado.
+            box.setMouseTransparent(true);
+            box.setFocusTraversable(false);
+            Label denied = new Label("×");
+            denied.setMouseTransparent(true);
+            denied.setStyle("-fx-text-fill: #c62828; -fx-font-size: 15px; -fx-font-weight: bold;");
+            denied.setTranslateY(-1);
+            denied.visibleProperty().bind(box.selectedProperty().not());
+            StackPane indicator = new StackPane(box, denied);
+            Label name = new Label(share);
+            name.setStyle("-fx-text-fill: black;");
             shareBoxes.add(box);
-            shares.add(box, index % 2, index / 2);
+            shares.add(new HBox(4, indicator, name), index % 2, index / 2);
         }
 
-        Button map = new Button("Mapear Pastas");
+        Button map = new Button("Mapear pastas");
         map.setDisable(true);
-        Button refresh = new Button("Atualizar Pastas");
-        refresh.setVisible(false);
-        refresh.setManaged(false);
+        Button refresh = new Button("Atualizar pastas");
         refresh.setDisable(true);
         Button changePassword = new Button("Alterar senha");
-        ScrollPane shareScroll = new ScrollPane(shares);
-        shareScroll.setFitToWidth(true);
-        shareScroll.setPrefViewportHeight(300);
-        VBox content = new VBox(12, new Label("Compartilhamentos disponíveis"), shareScroll,
-                new HBox(10, map, refresh, changePassword));
+        username.setOnAction(event -> password.requestFocus());
+        password.setOnAction(event -> enter.fire());
+        visibleLoginPassword.setOnAction(event -> enter.fire());
+        Label sharesTitle = new Label("Pastas disponíveis para este usuário");
+        sharesTitle.setMaxWidth(Double.MAX_VALUE);
+        sharesTitle.setAlignment(Pos.CENTER);
+        GridPane actions = new GridPane();
+        actions.setHgap(10);
+        actions.getColumnConstraints().addAll(actionColumn(), actionColumn(), actionColumn());
+        map.setMaxWidth(Double.MAX_VALUE);
+        refresh.setMaxWidth(Double.MAX_VALUE);
+        changePassword.setMaxWidth(Double.MAX_VALUE);
+        actions.addRow(0, map, refresh, changePassword);
+        HBox shareArea = new HBox(shares);
+        shareArea.setAlignment(Pos.CENTER);
+        shareArea.setMaxWidth(Double.MAX_VALUE);
+        VBox content = new VBox(9, sharesTitle, shareArea);
+        content.setPadding(new Insets(24, 0, 0, 0));
         content.setDisable(true);
+        actions.setDisable(true);
 
         enter.setOnAction(event -> {
             if (username.getText().isBlank() || password.getText().isEmpty()) {
@@ -90,6 +116,8 @@ public class SambaManagerApp extends Application {
             char[] currentPassword = password.getText().toCharArray();
             AppLog.info("Usuário " + currentUser + " solicitou verificação de acesso.");
             enter.setDisable(true);
+            content.setDisable(true);
+            actions.setDisable(true);
             status.setText("Verificando permissões…");
             Task<List<String>> task = new Task<>() {
                 @Override
@@ -102,8 +130,9 @@ public class SambaManagerApp extends Application {
                 List<String> accessible = task.getValue();
                 AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - "
                         + String.join(", ", accessible));
-                shareBoxes.forEach(box -> box.setSelected(accessible.contains(box.getText())));
+                shareBoxes.forEach(box -> box.setSelected(accessible.contains(shareOf(box))));
                 content.setDisable(false);
+                actions.setDisable(false);
                 map.setDisable(accessible.isEmpty());
                 refresh.setDisable(accessible.isEmpty());
                 enter.setDisable(false);
@@ -122,7 +151,7 @@ public class SambaManagerApp extends Application {
         });
 
         map.setOnAction(event -> {
-            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(CheckBox::getText).toList();
+            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(this::shareOf).toList();
             if (selected.isEmpty()) {
                 showError("Selecione pelo menos uma pasta.");
                 return;
@@ -143,7 +172,7 @@ public class SambaManagerApp extends Application {
                 map.setDisable(false);
                 refresh.setDisable(false);
                 password.clear();
-                // status.setText("Mapeamento concluído: " + String.join(", ", task.getValue())); 
+                // status.setText("Mapeamento concluído: " + String.join(", ", task.getValue()));
                 status.setText("Mapeamento concluído: ");
             });
             task.setOnFailed(failed -> {
@@ -158,7 +187,7 @@ public class SambaManagerApp extends Application {
         });
 
         refresh.setOnAction(event -> {
-            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(CheckBox::getText).toList();
+            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(this::shareOf).toList();
             if (selected.isEmpty()) {
                 showError("Selecione pelo menos uma pasta.");
                 return;
@@ -199,10 +228,16 @@ public class SambaManagerApp extends Application {
         changePassword.setOnAction(event -> showPasswordDialog(username.getText().trim(), status));
 
         BorderPane root = new BorderPane(content);
-        root.setTop(new VBox(12, new Label("Gerenciador de Acesso Samba"), login, new HBox(10, enter, status)));
+        HBox loginActions = new HBox(10, enter, status);
+        loginActions.setAlignment(Pos.CENTER_LEFT);
+        root.setTop(new VBox(12, new Label("Gerenciador de Acesso Samba"), login, loginActions));
+        root.setBottom(actions);
+        BorderPane.setMargin(actions, new Insets(14, 0, 0, 0));
         root.setPadding(new Insets(18));
         stage.setTitle("Royal Server Access");
-        stage.setScene(new Scene(root, 400, 560));
+        stage.setMinWidth(450);
+        stage.setMinHeight(640);
+        stage.setScene(new Scene(root, 450, 640));
         stage.show();
     }
 
@@ -210,6 +245,16 @@ public class SambaManagerApp extends Application {
         Alert alert = new Alert(Alert.AlertType.ERROR, message);
         alert.setHeaderText(null);
         alert.showAndWait();
+    }
+
+    private String shareOf(CheckBox box) {
+        return (String) box.getUserData();
+    }
+
+    private ColumnConstraints actionColumn() {
+        ColumnConstraints column = new ColumnConstraints();
+        column.setPercentWidth(100.0 / 3.0);
+        return column;
     }
 
     private void showPasswordDialog(String username, Label status) {
