@@ -50,6 +50,33 @@ public class WindowsDriveMappingService {
         return drives;
     }
 
+    /** Removes only Windows drive mappings whose UNC root belongs to the specified Samba server. */
+    public List<String> clearMappings(String server) throws Exception {
+        if (!System.getProperty("os.name").toLowerCase().contains("win")) {
+            throw new IllegalStateException("A limpeza de mapeamentos está disponível somente no Windows.");
+        }
+        String script = "$serverPath='\\\\'+$env:SAMBA_MANAGER_SERVER+'\\'; $letters=@(); "
+                + "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -like ($serverPath+'*') } | "
+                + "ForEach-Object { $letters += ($_.Name+':') }; "
+                + "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=4' | "
+                + "Where-Object { $_.ProviderName -like ($serverPath+'*') } | "
+                + "ForEach-Object { $letters += $_.DeviceID }; "
+                + "Get-ChildItem 'HKCU:\\Network' -ErrorAction SilentlyContinue | ForEach-Object { "
+                + "$entry=Get-ItemProperty $_.PSPath; if($entry.RemotePath -like ($serverPath+'*')){ $letters += ($_.PSChildName+':') } }; "
+                + "foreach($letter in @($letters | Select-Object -Unique)){ "
+                + "Remove-PSDrive -Name $letter.TrimEnd(':') -Force -ErrorAction SilentlyContinue; "
+                + "& net.exe use $letter /delete /y | Out-Null; "
+                + "Write-Output ('SAMBA_MANAGER_REMOVED:'+$letter) }";
+        AppLog.info("Iniciando limpeza de mapeamentos do servidor " + server + ".");
+        String output = runPowerShell(script, server, "", new char[0], List.of());
+        AppLog.info("Resposta do PowerShell na limpeza: " + output.replaceAll("[\\r\\n]+", " | "));
+        return output.lines()
+                .map(String::trim)
+                .filter(line -> line.startsWith("SAMBA_MANAGER_REMOVED:"))
+                .map(line -> line.substring("SAMBA_MANAGER_REMOVED:".length()))
+                .toList();
+    }
+
     /** Tests every share using the supplied Samba account, without creating persistent drives. */
     public List<String> checkAccessibleShares(String server, String username, char[] password, List<String> shares) throws Exception {
         AppLog.info("Iniciando verificação de " + shares.size() + " compartilhamento(s) para o usuário " + username + " no servidor " + server + ".");

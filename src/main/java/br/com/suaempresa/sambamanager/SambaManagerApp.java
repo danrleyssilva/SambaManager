@@ -85,7 +85,9 @@ public class SambaManagerApp extends Application {
         map.setDisable(true);
         Button refresh = new Button("Atualizar pastas");
         refresh.setDisable(true);
+        Button clearMappings = new Button("Limpar mapeamentos");
         Button changePassword = new Button("Alterar senha");
+        changePassword.setDisable(true);
         username.setOnAction(event -> password.requestFocus());
         password.setOnAction(event -> enter.fire());
         visibleLoginPassword.setOnAction(event -> enter.fire());
@@ -94,18 +96,18 @@ public class SambaManagerApp extends Application {
         sharesTitle.setAlignment(Pos.CENTER);
         GridPane actions = new GridPane();
         actions.setHgap(10);
-        actions.getColumnConstraints().addAll(actionColumn(), actionColumn(), actionColumn());
+        actions.getColumnConstraints().addAll(actionColumn(), actionColumn(), actionColumn(), actionColumn());
         map.setMaxWidth(Double.MAX_VALUE);
         refresh.setMaxWidth(Double.MAX_VALUE);
+        clearMappings.setMaxWidth(Double.MAX_VALUE);
         changePassword.setMaxWidth(Double.MAX_VALUE);
-        actions.addRow(0, map, refresh, changePassword);
+        actions.addRow(0, map, refresh, clearMappings, changePassword);
         HBox shareArea = new HBox(shares);
         shareArea.setAlignment(Pos.CENTER);
         shareArea.setMaxWidth(Double.MAX_VALUE);
         VBox content = new VBox(9, sharesTitle, shareArea);
         content.setPadding(new Insets(24, 0, 0, 0));
         content.setDisable(true);
-        actions.setDisable(true);
 
         enter.setOnAction(event -> {
             if (username.getText().isBlank() || password.getText().isEmpty()) {
@@ -117,7 +119,6 @@ public class SambaManagerApp extends Application {
             AppLog.info("Usuário " + currentUser + " solicitou verificação de acesso.");
             enter.setDisable(true);
             content.setDisable(true);
-            actions.setDisable(true);
             status.setText("Verificando permissões…");
             Task<List<String>> task = new Task<>() {
                 @Override
@@ -132,9 +133,9 @@ public class SambaManagerApp extends Application {
                         + String.join(", ", accessible));
                 shareBoxes.forEach(box -> box.setSelected(accessible.contains(shareOf(box))));
                 content.setDisable(false);
-                actions.setDisable(false);
                 map.setDisable(accessible.isEmpty());
                 refresh.setDisable(accessible.isEmpty());
+                changePassword.setDisable(false);
                 enter.setDisable(false);
                 status.setText(accessible.isEmpty()
                         ? "Nenhuma pasta disponível para este usuário."
@@ -225,6 +226,39 @@ public class SambaManagerApp extends Application {
             new Thread(task, "samba-drive-refresher").start();
         });
 
+        clearMappings.setOnAction(event -> {
+            Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
+                    "Isso removerá somente os mapeamentos de " + config.server() + " deste computador. Deseja continuar?",
+                    ButtonType.YES, ButtonType.NO);
+            confirmation.setHeaderText("Limpar mapeamentos");
+            if (confirmation.showAndWait().orElse(ButtonType.NO) != ButtonType.YES) {
+                return;
+            }
+            clearMappings.setDisable(true);
+            status.setText("Limpando mapeamentos…");
+            Task<List<String>> task = new Task<>() {
+                @Override
+                protected List<String> call() throws Exception {
+                    return mappingService.clearMappings(config.server());
+                }
+            };
+            task.setOnSucceeded(done -> {
+                clearMappings.setDisable(false);
+                List<String> removed = task.getValue();
+                AppLog.info("Mapeamentos removidos do servidor " + config.server() + ": "
+                        + (removed.isEmpty() ? "nenhum" : String.join(", ", removed)));
+                status.setText(removed.isEmpty() ? "Nenhum mapeamento encontrado neste computador."
+                        : "Mapeamentos removidos: " + String.join(", ", removed));
+            });
+            task.setOnFailed(failed -> {
+                clearMappings.setDisable(false);
+                AppLog.error("Falha ao limpar mapeamentos do servidor " + config.server() + ".", task.getException());
+                status.setText("Não foi possível limpar os mapeamentos.");
+                showError(task.getException().getMessage());
+            });
+            new Thread(task, "samba-drive-cleaner").start();
+        });
+
         changePassword.setOnAction(event -> showPasswordDialog(username.getText().trim(), status));
 
         BorderPane root = new BorderPane(content);
@@ -235,9 +269,9 @@ public class SambaManagerApp extends Application {
         BorderPane.setMargin(actions, new Insets(14, 0, 0, 0));
         root.setPadding(new Insets(18));
         stage.setTitle("Royal Server Access");
-        stage.setMinWidth(450);
+        stage.setMinWidth(560);
         stage.setMinHeight(640);
-        stage.setScene(new Scene(root, 450, 640));
+        stage.setScene(new Scene(root, 560, 640));
         stage.show();
     }
 
@@ -253,7 +287,7 @@ public class SambaManagerApp extends Application {
 
     private ColumnConstraints actionColumn() {
         ColumnConstraints column = new ColumnConstraints();
-        column.setPercentWidth(100.0 / 3.0);
+        column.setPercentWidth(25);
         return column;
     }
 
