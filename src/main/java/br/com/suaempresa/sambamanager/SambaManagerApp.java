@@ -23,6 +23,7 @@ import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
+import javafx.scene.image.Image;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
@@ -35,6 +36,7 @@ import javafx.scene.shape.SVGPath;
 import javafx.stage.Stage;
 
 public class SambaManagerApp extends Application {
+    private static final String ADMIN_SHARE = "Administracao";
     private final SambaConfig config = SambaConfig.load();
     private final WindowsDriveMappingService mappingService = new WindowsDriveMappingService();
     private final PasswordChangeService passwordChangeService = new PasswordChangeService();
@@ -78,7 +80,11 @@ public class SambaManagerApp extends Application {
             Label name = new Label(share);
             name.setStyle("-fx-text-fill: black;");
             shareBoxes.add(box);
-            shares.add(new HBox(4, indicator, name), index % 2, index / 2);
+            HBox shareRow = new HBox(4, indicator, name);
+            box.getProperties().put("shareRow", shareRow);
+            if (!ADMIN_SHARE.equals(share)) {
+                shares.add(shareRow, index % 2, index / 2);
+            }
         }
 
         Button map = new Button("Mapear pastas");
@@ -102,6 +108,12 @@ public class SambaManagerApp extends Application {
         clearMappings.setMaxWidth(Double.MAX_VALUE);
         changePassword.setMaxWidth(Double.MAX_VALUE);
         actions.addRow(0, map, refresh, clearMappings, changePassword);
+        Label versionLabel = new Label("Versão "
+                + System.getProperty("samba.manager.version", "desenvolvimento"));
+        versionLabel.setMaxWidth(Double.MAX_VALUE);
+        versionLabel.setAlignment(Pos.CENTER_RIGHT);
+        versionLabel.setStyle("-fx-text-fill: #707070; -fx-font-size: 10px;");
+        VBox footer = new VBox(7, actions, versionLabel);
         HBox shareArea = new HBox(shares);
         shareArea.setAlignment(Pos.CENTER);
         shareArea.setMaxWidth(Double.MAX_VALUE);
@@ -131,15 +143,27 @@ public class SambaManagerApp extends Application {
                 List<String> accessible = task.getValue();
                 AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - "
                         + String.join(", ", accessible));
-                shareBoxes.forEach(box -> box.setSelected(accessible.contains(shareOf(box))));
+                boolean administrator = accessible.contains(ADMIN_SHARE);
+                updateShareView(shares, accessible, administrator);
+                List<String> availableToMap = shareBoxes.stream()
+                        .filter(CheckBox::isSelected)
+                        .map(this::shareOf)
+                        .toList();
                 content.setDisable(false);
-                map.setDisable(accessible.isEmpty());
-                refresh.setDisable(accessible.isEmpty());
+                map.setDisable(availableToMap.isEmpty());
+                refresh.setDisable(availableToMap.isEmpty());
                 changePassword.setDisable(false);
                 enter.setDisable(false);
-                status.setText(accessible.isEmpty()
+                status.setText(administrator
+                        ? "Acesso administrativo identificado em " + config.server()
+                        : availableToMap.isEmpty()
                         ? "Nenhuma pasta disponível para este usuário."
-                        : accessible.size() + " pasta(s) disponível(is) em " + config.server());
+                        : availableToMap.size() + " pasta(s) disponível(is) em " + config.server());
+
+                if (administrator) {
+                    AppLog.info("Usuário " + currentUser
+                            + " identificado como administrador. Somente o compartilhamento Administracao será mapeado.");
+                }
 
             });
             task.setOnFailed(failed -> {
@@ -228,7 +252,7 @@ public class SambaManagerApp extends Application {
 
         clearMappings.setOnAction(event -> {
             Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
-                    "Isso removerá somente os mapeamentos de " + config.server() + " deste computador. Deseja continuar?",
+                    "Isso removerá somente os mapeamentos do Servidor de arquivos deste computador. Deseja continuar?",
                     ButtonType.YES, ButtonType.NO);
             confirmation.setHeaderText("Limpar mapeamentos");
             if (confirmation.showAndWait().orElse(ButtonType.NO) != ButtonType.YES) {
@@ -249,6 +273,9 @@ public class SambaManagerApp extends Application {
                         + (removed.isEmpty() ? "nenhum" : String.join(", ", removed)));
                 status.setText(removed.isEmpty() ? "Nenhum mapeamento encontrado neste computador."
                         : "Mapeamentos removidos: " + String.join(", ", removed));
+                if (!removed.isEmpty()) {
+                    offerRestart();
+                }
             });
             task.setOnFailed(failed -> {
                 clearMappings.setDisable(false);
@@ -264,11 +291,15 @@ public class SambaManagerApp extends Application {
         BorderPane root = new BorderPane(content);
         HBox loginActions = new HBox(10, enter, status);
         loginActions.setAlignment(Pos.CENTER_LEFT);
-        root.setTop(new VBox(12, new Label("Gerenciador de Acesso Samba"), login, loginActions));
-        root.setBottom(actions);
-        BorderPane.setMargin(actions, new Insets(14, 0, 0, 0));
+        root.setTop(new VBox(12, new Label("Gerenciador de Acesso ao Servidor de Arquivos"), login, loginActions));
+        root.setBottom(footer);
+        BorderPane.setMargin(footer, new Insets(14, 0, 0, 0));
         root.setPadding(new Insets(18));
         stage.setTitle("Royal Server Access");
+        var iconUrl = SambaManagerApp.class.getResource("/icons/server-access.png");
+        if (iconUrl != null) {
+            stage.getIcons().add(new Image(iconUrl.toExternalForm()));
+        }
         stage.setMinWidth(560);
         stage.setMinHeight(640);
         stage.setScene(new Scene(root, 560, 640));
@@ -283,6 +314,39 @@ public class SambaManagerApp extends Application {
 
     private String shareOf(CheckBox box) {
         return (String) box.getUserData();
+    }
+
+    private void updateShareView(GridPane shares, List<String> accessible, boolean administrator) {
+        shares.getChildren().clear();
+        shareBoxes.forEach(box -> box.setSelected(false));
+        List<CheckBox> visible = shareBoxes.stream()
+                .filter(box -> administrator == ADMIN_SHARE.equals(shareOf(box)))
+                .toList();
+        for (int index = 0; index < visible.size(); index++) {
+            CheckBox box = visible.get(index);
+            box.setSelected(accessible.contains(shareOf(box)));
+            HBox row = (HBox) box.getProperties().get("shareRow");
+            shares.add(row, index % 2, index / 2);
+        }
+    }
+
+    private void offerRestart() {
+        ButtonType restartNow = new ButtonType("Reiniciar agora", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        ButtonType restartLater = new ButtonType("Depois", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert restart = new Alert(Alert.AlertType.INFORMATION,
+                "Os mapeamentos foram removidos. Reinicie o computador para concluir a limpeza das conexões do servidor.",
+                restartNow, restartLater);
+        restart.setTitle("Reinicialização necessária");
+        restart.setHeaderText("A limpeza foi concluída");
+        if (restart.showAndWait().orElse(restartLater) == restartNow) {
+            try {
+                AppLog.info("Usuário solicitou a reinicialização do computador após limpar os mapeamentos.");
+                new ProcessBuilder("shutdown.exe", "/r", "/t", "0").start();
+            } catch (Exception exception) {
+                AppLog.error("Não foi possível iniciar a reinicialização do computador.", exception);
+                showError("Não foi possível reiniciar o computador. Reinicie-o manualmente.");
+            }
+        }
     }
 
     private ColumnConstraints actionColumn() {
