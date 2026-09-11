@@ -3,12 +3,17 @@ package br.com.suaempresa.sambamanager;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.nio.file.Path;
 
 import br.com.suaempresa.sambamanager.service.AppLog;
 import br.com.suaempresa.sambamanager.service.PasswordChangeService;
 import br.com.suaempresa.sambamanager.service.SambaConfig;
+import br.com.suaempresa.sambamanager.service.UpdateInfo;
+import br.com.suaempresa.sambamanager.service.UpdateInstallerLauncher;
+import br.com.suaempresa.sambamanager.service.UpdateService;
 import br.com.suaempresa.sambamanager.service.WindowsDriveMappingService;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
@@ -40,6 +45,7 @@ public class SambaManagerApp extends Application {
     private final SambaConfig config = SambaConfig.load();
     private final WindowsDriveMappingService mappingService = new WindowsDriveMappingService();
     private final PasswordChangeService passwordChangeService = new PasswordChangeService();
+    private final UpdateService updateService = new UpdateService();
     private final List<CheckBox> shareBoxes = new ArrayList<>();
 
     @Override
@@ -108,12 +114,16 @@ public class SambaManagerApp extends Application {
         clearMappings.setMaxWidth(Double.MAX_VALUE);
         changePassword.setMaxWidth(Double.MAX_VALUE);
         actions.addRow(0, map, refresh, clearMappings, changePassword);
-        Label versionLabel = new Label("Versão "
-                + System.getProperty("samba.manager.version", "desenvolvimento"));
-        versionLabel.setMaxWidth(Double.MAX_VALUE);
-        versionLabel.setAlignment(Pos.CENTER_RIGHT);
+        String currentVersion = System.getProperty("samba.manager.version", "desenvolvimento");
+        Label versionLabel = new Label("Versão " + currentVersion);
         versionLabel.setStyle("-fx-text-fill: #707070; -fx-font-size: 10px;");
-        VBox footer = new VBox(7, actions, versionLabel);
+        Button updateButton = new Button("Atualizar");
+        updateButton.setVisible(false);
+        updateButton.setManaged(false);
+        updateButton.setStyle("-fx-font-size: 10px; -fx-padding: 2 8 2 8;");
+        HBox versionBar = new HBox(7, versionLabel, updateButton);
+        versionBar.setAlignment(Pos.CENTER_RIGHT);
+        VBox footer = new VBox(7, actions, versionBar);
         HBox shareArea = new HBox(shares);
         shareArea.setAlignment(Pos.CENTER);
         shareArea.setMaxWidth(Double.MAX_VALUE);
@@ -304,6 +314,7 @@ public class SambaManagerApp extends Application {
         stage.setMinHeight(640);
         stage.setScene(new Scene(root, 560, 640));
         stage.show();
+        checkForUpdates(updateButton, currentVersion, status);
     }
 
     private void showError(String message) {
@@ -314,6 +325,108 @@ public class SambaManagerApp extends Application {
 
     private String shareOf(CheckBox box) {
         return (String) box.getUserData();
+    }
+
+    private void checkForUpdates(Button updateButton, String currentVersion, Label status) {
+        Task<UpdateInfo> task = new Task<>() {
+            @Override
+            protected UpdateInfo call() throws Exception {
+                return updateService.check(config.updateApiUrl());
+            }
+        };
+        task.setOnSucceeded(event -> {
+            UpdateInfo update = task.getValue();
+            if (compareVersions(update.version(), currentVersion) > 0) {
+                updateButton.setText("Atualizar para " + update.version());
+                updateButton.setUserData(update);
+                updateButton.setVisible(true);
+                updateButton.setManaged(true);
+                AppLog.info("Atualização disponível: versão instalada=" + currentVersion
+                        + ", versão disponível=" + update.version() + ".");
+                updateButton.setOnAction(click -> startUpdate(updateButton, status, update));
+            } else {
+                AppLog.info("Aplicativo atualizado. Versão instalada=" + currentVersion
+                        + ", versão disponível=" + update.version() + ".");
+            }
+        });
+        task.setOnFailed(event -> AppLog.error("Não foi possível consultar atualizações.", task.getException()));
+        Thread checker = new Thread(task, "samba-update-checker");
+        checker.setDaemon(true);
+        checker.start();
+    }
+
+    private void startUpdate(Button updateButton, Label status, UpdateInfo update) {
+        ButtonType install = new ButtonType("Baixar e instalar",
+                javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        ButtonType later = new ButtonType("Depois", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
+                "Versão disponível: " + update.version() + "\n\n" + update.notes()
+                        + "\n\nO instalador será baixado, verificado e aberto automaticamente.",
+                install, later);
+        confirmation.setTitle("Atualização disponível");
+        confirmation.setHeaderText(update.required() ? "Atualização necessária" : "Existe uma nova versão");
+        if (confirmation.showAndWait().orElse(later) != install) {
+            return;
+        }
+        updateButton.setDisable(true);
+        updateButton.setText("Baixando…");
+        status.setText("Baixando atualização " + update.version() + "…");
+        Task<Path> task = new Task<>() {
+            @Override
+            protected Path call() throws Exception {
+                return updateService.download(update);
+            }
+        };
+        task.setOnSucceeded(event -> {
+            Path installer = task.getValue();
+            try {
+                AppLog.info("Abrindo o instalador da atualização " + update.version() + ".");
+                UpdateInstallerLauncher.launchCentered(installer);
+                Platform.exit();
+            } catch (Exception exception) {
+                updateButton.setDisable(false);
+                updateButton.setText("Atualizar para " + update.version());
+                status.setText("Não foi possível abrir o instalador.");
+                AppLog.error("Falha ao abrir o instalador da atualização.", exception);
+                showError("A atualização foi baixada, mas o instalador não pôde ser aberto.");
+            }
+        });
+        task.setOnFailed(event -> {
+            updateButton.setDisable(false);
+            updateButton.setText("Atualizar para " + update.version());
+            status.setText("Não foi possível instalar a atualização.");
+            AppLog.error("Falha ao baixar ou validar a atualização " + update.version() + ".", task.getException());
+            showError(task.getException().getMessage());
+        });
+        Thread downloader = new Thread(task, "samba-update-downloader");
+        downloader.setDaemon(true);
+        downloader.start();
+    }
+
+    private int compareVersions(String left, String right) {
+        String[] leftParts = left.split("\\.");
+        String[] rightParts = right.split("\\.");
+        int size = Math.max(leftParts.length, rightParts.length);
+        for (int index = 0; index < size; index++) {
+            int leftPart = index < leftParts.length ? numericPart(leftParts[index]) : 0;
+            int rightPart = index < rightParts.length ? numericPart(rightParts[index]) : 0;
+            if (leftPart != rightPart) {
+                return Integer.compare(leftPart, rightPart);
+            }
+        }
+        return 0;
+    }
+
+    private int numericPart(String value) {
+        String digits = value.replaceFirst("[^0-9].*$", "");
+        if (digits.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(digits);
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
     }
 
     private void updateShareView(GridPane shares, List<String> accessible, boolean administrator) {

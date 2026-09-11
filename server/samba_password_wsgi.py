@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import os
+from pathlib import Path
 import pwd
 import re
 import subprocess
@@ -19,13 +20,59 @@ def config():
 
 
 CONFIG = config()
+RELEASES_DIRECTORY = Path(CONFIG.get("releases_directory", "/opt/samba-password-api/releases"))
+
+
+def json_response(start_response, status, value, cache_control="no-store"):
+    payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    start_response(status, [("Content-Type", "application/json; charset=utf-8"),
+                            ("Content-Length", str(len(payload))),
+                            ("Cache-Control", cache_control),
+                            ("Connection", "close")])
+    return [payload]
 
 
 def response(start_response, status, message):
-    payload = json.dumps({"message": message}).encode("utf-8")
-    start_response(status, [("Content-Type", "application/json; charset=utf-8"),
-                            ("Content-Length", str(len(payload))), ("Connection", "close")])
-    return [payload]
+    return json_response(start_response, status, {"message": message})
+
+
+def release_file(environ, start_response, filename):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.exe", filename, re.IGNORECASE):
+        return response(start_response, "404 Not Found", "Não encontrado.")
+    release = (RELEASES_DIRECTORY / filename).resolve()
+    if release.parent != RELEASES_DIRECTORY.resolve() or not release.is_file():
+        return response(start_response, "404 Not Found", "Não encontrado.")
+    size = release.stat().st_size
+    start_response("200 OK", [
+        ("Content-Type", "application/vnd.microsoft.portable-executable"),
+        ("Content-Length", str(size)),
+        ("Content-Disposition", f'attachment; filename="{release.name}"'),
+        ("Cache-Control", "private, no-cache"),
+        ("Connection", "close"),
+    ])
+    handle = release.open("rb")
+    wrapper = environ.get("wsgi.file_wrapper")
+    if wrapper:
+        return wrapper(handle, 1024 * 1024)
+
+    def chunks():
+        try:
+            while data := handle.read(1024 * 1024):
+                yield data
+        finally:
+            handle.close()
+
+    return chunks()
+
+
+def app_version(start_response):
+    manifest_path = RELEASES_DIRECTORY / "update.json"
+    with manifest_path.open(encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    required = ("version", "downloadUrl", "sha256", "required", "notes")
+    if not isinstance(manifest, dict) or any(key not in manifest for key in required):
+        raise ValueError("update.json inválido")
+    return json_response(start_response, "200 OK", manifest)
 
 
 def change_password(username, current_password, new_password):
@@ -45,10 +92,19 @@ def change_password(username, current_password, new_password):
 def app(environ, start_response):
     source = environ.get("REMOTE_ADDR", "unknown")
     try:
-        if environ["REQUEST_METHOD"] != "POST" or environ["PATH_INFO"] != "/v1/change-password":
-            return response(start_response, "404 Not Found", "Não encontrado.")
         if not any(ipaddress.ip_address(source) in network for network in CONFIG["allowed_networks"]):
             return response(start_response, "403 Forbidden", "Origem não autorizada.")
+        method = environ.get("REQUEST_METHOD", "")
+        path = environ.get("PATH_INFO", "")
+        if method == "GET" and path == "/v1/app-version":
+            logging.info("update-check source=%s", source)
+            return app_version(start_response)
+        if method == "GET" and path.startswith("/releases/"):
+            filename = path.removeprefix("/releases/")
+            logging.info("update-download source=%s file=%s", source, filename)
+            return release_file(environ, start_response, filename)
+        if method != "POST" or path != "/v1/change-password":
+            return response(start_response, "404 Not Found", "Não encontrado.")
         size = int(environ.get("CONTENT_LENGTH", "0"))
         if size < 2 or size > 16384:
             return response(start_response, "400 Bad Request", "Solicitação inválida.")
@@ -63,6 +119,9 @@ def app(environ, start_response):
             return response(start_response, "200 OK", "Senha alterada.")
         logging.warning("password-change source=%s user=%s result=denied", source, username)
         return response(start_response, "401 Unauthorized", "Não foi possível alterar a senha.")
+    except FileNotFoundError as error:
+        logging.warning("resource-not-found source=%s reason=%s", source, error)
+        return response(start_response, "404 Not Found", "Não encontrado.")
     except (ValueError, KeyError, json.JSONDecodeError, pwd.KeyError) as error:
         logging.warning("password-change invalid-request source=%s reason=%s", source, error)
         return response(start_response, "400 Bad Request", "Solicitação inválida.")

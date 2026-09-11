@@ -1,6 +1,8 @@
 param(
     [string]$Version = "3.9",
-    [string]$JpackagePath
+    [string]$JpackagePath,
+    [string]$ReleaseNotes = "Melhorias e correcoes no Royal Server Access.",
+    [switch]$Required
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,4 +73,30 @@ if ($LASTEXITCODE -ne 0) {
     throw "Nao foi possivel gerar o instalador."
 }
 
-Write-Host "Instalador criado em: $destination"
+$generatedInstaller = Get-ChildItem -LiteralPath $destination -Filter "*.exe" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+if ($null -eq $generatedInstaller) {
+    throw "O jpackage terminou, mas o instalador EXE nao foi encontrado."
+}
+
+$releaseName = "RoyalServerAccess-$Version.exe"
+$releasePath = Join-Path $destination $releaseName
+if ($generatedInstaller.FullName -ne $releasePath) {
+    Move-Item -LiteralPath $generatedInstaller.FullName -Destination $releasePath -Force
+}
+$releaseHash = (Get-FileHash -LiteralPath $releasePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifest = [ordered]@{
+    version = $Version
+    downloadUrl = "https://192.168.0.93:8443/releases/$releaseName"
+    sha256 = $releaseHash
+    required = [bool]$Required
+    notes = $ReleaseNotes
+} | ConvertTo-Json
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+$manifestPath = Join-Path $destination "update.json"
+[System.IO.File]::WriteAllText($manifestPath, $manifest, $utf8WithoutBom)
+
+Write-Host "Instalador criado em: $releasePath"
+Write-Host "Manifesto criado em: $manifestPath"
+Write-Host "SHA-256: $releaseHash"

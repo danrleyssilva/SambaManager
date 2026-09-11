@@ -4,5 +4,6 @@
   "certificate": "/etc/samba-password-api/tls/server.crt",
   "private_key": "/etc/samba-password-api/tls/server.key",
   "minimum_password_length": 8,
-  "allowed_networks": ["192.168.0.0/16", "10.0.8.0/24"]
+  "allowed_networks": ["192.168.0.0/16", "10.0.8.0/24"],
+  "releases_directory": "/opt/samba-password-api/releases"
 }

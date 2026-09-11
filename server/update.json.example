@@ -1,0 +1,7 @@
+{
+  "version": "4.1",
+  "downloadUrl": "https://192.168.0.93:8443/releases/RoyalServerAccess-4.1.exe",
+  "sha256": "SUBSTITUA_PELO_SHA256_DO_INSTALADOR",
+  "required": false,
+  "notes": "Melhorias e correções no Royal Server Access."
+}

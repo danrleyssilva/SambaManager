@@ -1,0 +1,7 @@
+{
+    "version":  "4.2",
+    "downloadUrl":  "https://192.168.0.93:8443/releases/RoyalServerAccess-4.2.exe",
+    "sha256":  "57e0582eef1a93817c23bb3dd6d512ebf90d6240509e27e79a5c2db46c385165",
+    "required":  false,
+    "notes":  "Instalador centralizado e melhorias no sistema de atualizacao."
+}
