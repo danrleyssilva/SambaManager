@@ -2,6 +2,9 @@
 
 Aplicativo Windows para mostrar e mapear compartilhamentos de um servidor Samba.
 
+Consulte o [manual operacional completo](DOCUMENTACAO_OPERACIONAL.md) para publicação,
+configuração do servidor, certificados, logs, auditoria e diagnóstico.
+
 ## Pré-requisitos
 
 - JDK 21 LTS

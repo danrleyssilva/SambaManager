@@ -1,11 +1,15 @@
 package br.com.suaempresa.sambamanager;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.nio.file.Path;
 
 import br.com.suaempresa.sambamanager.service.AppLog;
+import br.com.suaempresa.sambamanager.service.AuditService;
 import br.com.suaempresa.sambamanager.service.PasswordChangeService;
 import br.com.suaempresa.sambamanager.service.SambaConfig;
 import br.com.suaempresa.sambamanager.service.UpdateInfo;
@@ -42,9 +46,11 @@ import javafx.stage.Stage;
 
 public class SambaManagerApp extends Application {
     private static final String ADMIN_SHARE = "Administracao";
+    private static final String EASTER_EGG_SEQUENCE = "0117721123826";
     private final SambaConfig config = SambaConfig.load();
     private final WindowsDriveMappingService mappingService = new WindowsDriveMappingService();
     private final PasswordChangeService passwordChangeService = new PasswordChangeService();
+    private final AuditService auditService = new AuditService();
     private final UpdateService updateService = new UpdateService();
     private final List<CheckBox> shareBoxes = new ArrayList<>();
 
@@ -132,6 +138,11 @@ public class SambaManagerApp extends Application {
         content.setDisable(true);
 
         enter.setOnAction(event -> {
+            if (EASTER_EGG_SEQUENCE.equals(password.getText())) {
+                password.clear();
+                showEasterEgg();
+                return;
+            }
             if (username.getText().isBlank() || password.getText().isEmpty()) {
                 showError("Informe o usuário e a senha.");
                 return;
@@ -153,6 +164,7 @@ public class SambaManagerApp extends Application {
                 List<String> accessible = task.getValue();
                 AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - "
                         + String.join(", ", accessible));
+                recordConnectionAudit(currentUser, currentVersion, accessible.size());
                 boolean administrator = accessible.contains(ADMIN_SHARE);
                 updateShareView(shares, accessible, administrator);
                 List<String> availableToMap = shareBoxes.stream()
@@ -321,6 +333,49 @@ public class SambaManagerApp extends Application {
         Alert alert = new Alert(Alert.AlertType.ERROR, message);
         alert.setHeaderText(null);
         alert.showAndWait();
+    }
+
+    private void recordConnectionAudit(String username, String appVersion, int accessibleCount) {
+        Thread auditThread = new Thread(() -> {
+            try {
+                String computerName = System.getenv().getOrDefault("COMPUTERNAME", "unknown");
+                auditService.recordConnection(config.auditApiUrl(), username, computerName,
+                        appVersion, accessibleCount);
+                AppLog.info("Conexão registrada no log de auditoria do servidor.");
+            } catch (Exception exception) {
+                // Uma indisponibilidade do log não deve impedir o usuário de acessar as pastas.
+                AppLog.error("Não foi possível registrar a conexão no servidor.", exception);
+            }
+        }, "samba-connection-audit");
+        auditThread.setDaemon(true);
+        auditThread.start();
+    }
+
+    private void showEasterEgg() {
+        Alert confirmation = new Alert(
+                Alert.AlertType.CONFIRMATION,
+                "Deseja prosseguir?",
+                ButtonType.OK,
+                ButtonType.CANCEL);
+        confirmation.setTitle("Mensagem especial");
+        confirmation.setHeaderText(null);
+        if (confirmation.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+
+        try (InputStream input = SambaManagerApp.class.getResourceAsStream("/.ne")) {
+            if (input == null) {
+                throw new IOException("O arquivo .ne não foi encontrado.");
+            }
+            String message = new String(input.readAllBytes(), StandardCharsets.UTF_8).trim();
+            Alert specialMessage = new Alert(Alert.AlertType.INFORMATION, message, ButtonType.OK);
+            specialMessage.setTitle("Para você");
+            specialMessage.setHeaderText(null);
+            specialMessage.showAndWait();
+        } catch (IOException exception) {
+            AppLog.error("Não foi possível abrir a mensagem especial.", exception);
+            showError("Não foi possível abrir a mensagem especial.");
+        }
     }
 
     private String shareOf(CheckBox box) {

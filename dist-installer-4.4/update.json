@@ -1,0 +1,7 @@
+{
+    "version":  "4.4",
+    "downloadUrl":  "https://192.168.0.93:8443/releases/RoyalServerAccess-4.4.exe",
+    "sha256":  "d108377a1b58f3967442986203338f5930e878c5b81a686b9b22a62fbc2055da",
+    "required":  false,
+    "notes":  "Adicionado registro central de conexoes e alteracoes de senha."
+}

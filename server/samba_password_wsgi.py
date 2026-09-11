@@ -2,6 +2,7 @@
 import ipaddress
 import json
 import logging
+from logging.handlers import WatchedFileHandler
 import os
 from pathlib import Path
 import pwd
@@ -21,6 +22,21 @@ def config():
 
 CONFIG = config()
 RELEASES_DIRECTORY = Path(CONFIG.get("releases_directory", "/opt/samba-password-api/releases"))
+AUDIT_LOG_PATH = CONFIG.get("audit_log", "/var/log/royal-server-access-audit.log")
+
+
+def audit_logger():
+    logger = logging.getLogger("royal-server-access-audit")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        handler = WatchedFileHandler(AUDIT_LOG_PATH, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+AUDIT = audit_logger()
 
 
 def json_response(start_response, status, value, cache_control="no-store"):
@@ -84,9 +100,31 @@ def change_password(username, current_password, new_password):
         env={"HOME": account.pw_dir, "USER": account.pw_name, "LOGNAME": account.pw_name, "PATH": "/usr/bin:/bin"},
     )
     diagnostic = " ".join(item.strip() for item in (result.stdout, result.stderr) if item.strip())
-    logging.info("password-change user=%s result=%s exit_code=%s diagnostic=%r", username,
+    logging.info("smbpasswd user=%s result=%s exit_code=%s diagnostic=%r", username,
                  "success" if result.returncode == 0 else "denied", result.returncode, diagnostic)
     return result.returncode == 0
+
+
+def safe_log_value(value, maximum=128):
+    return "".join(character if character.isprintable() else "?" for character in value)[:maximum]
+
+
+def audit_login(environ, start_response, source):
+    size = int(environ.get("CONTENT_LENGTH", "0"))
+    if size < 2 or size > 4096:
+        return response(start_response, "400 Bad Request", "Solicitação inválida.")
+    request = json.loads(environ["wsgi.input"].read(size))
+    username = request["username"]
+    computer = request.get("computerName", "unknown")
+    version = request.get("appVersion", "unknown")
+    accessible_count = request.get("accessibleCount", 0)
+    if (not isinstance(username, str) or not USERNAME.fullmatch(username)
+            or not isinstance(computer, str) or not isinstance(version, str)
+            or not isinstance(accessible_count, int) or accessible_count < 0 or accessible_count > 1000):
+        return response(start_response, "400 Bad Request", "Solicitação inválida.")
+    AUDIT.info("event=connection result=success user=%s source=%s computer=%s app_version=%s accessible_shares=%s",
+               username, source, safe_log_value(computer), safe_log_value(version, 32), accessible_count)
+    return response(start_response, "200 OK", "Conexão registrada.")
 
 
 def app(environ, start_response):
@@ -103,6 +141,8 @@ def app(environ, start_response):
             filename = path.removeprefix("/releases/")
             logging.info("update-download source=%s file=%s", source, filename)
             return release_file(environ, start_response, filename)
+        if method == "POST" and path == "/v1/audit-login":
+            return audit_login(environ, start_response, source)
         if method != "POST" or path != "/v1/change-password":
             return response(start_response, "404 Not Found", "Não encontrado.")
         size = int(environ.get("CONTENT_LENGTH", "0"))
@@ -116,8 +156,10 @@ def app(environ, start_response):
             return response(start_response, "400 Bad Request", "A nova senha não atende ao tamanho mínimo.")
         if change_password(username, current, new):
             logging.info("password-change source=%s user=%s result=success", source, username)
+            AUDIT.info("event=password-change result=success user=%s source=%s", username, source)
             return response(start_response, "200 OK", "Senha alterada.")
         logging.warning("password-change source=%s user=%s result=denied", source, username)
+        AUDIT.warning("event=password-change result=denied user=%s source=%s", username, source)
         return response(start_response, "401 Unauthorized", "Não foi possível alterar a senha.")
     except FileNotFoundError as error:
         logging.warning("resource-not-found source=%s reason=%s", source, error)

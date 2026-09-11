@@ -7,7 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Properties;
 
-public record SambaConfig(String server, String passwordApiUrl, String updateApiUrl, List<String> shares) {
+public record SambaConfig(String server, String passwordApiUrl, String updateApiUrl,
+        String auditApiUrl, List<String> shares) {
     public static SambaConfig load() {
         Properties properties = new Properties();
         try (InputStream input = SambaConfig.class.getResourceAsStream("/samba.properties")) {
@@ -18,7 +19,8 @@ public record SambaConfig(String server, String passwordApiUrl, String updateApi
         }
         List<String> shares = List.of(properties.getProperty("shares", "").split("\\|"));
         return new SambaConfig(properties.getProperty("server"), plainUrl(properties.getProperty("password.api.url")),
-                plainUrl(properties.getProperty("update.api.url")), shares);
+                plainUrl(properties.getProperty("update.api.url")),
+                plainUrl(properties.getProperty("audit.api.url")), shares);
     }
 
     private static String plainUrl(String value) {
