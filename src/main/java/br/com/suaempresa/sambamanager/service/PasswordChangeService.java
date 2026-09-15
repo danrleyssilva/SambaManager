@@ -25,6 +25,19 @@ public class PasswordChangeService {
                     HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             AppLog.info("Serviço de senha respondeu HTTP " + response.statusCode() + ".");
             if (response.statusCode() != 200) throw new IllegalStateException(message(response.body()));
+            try {
+                WindowsCredentialService.save(URI.create(endpoint).getHost(), username, newPassword);
+            } catch (Exception exception) {
+                // A senha Samba já foi alterada; não informar falsamente que a troca falhou.
+                AppLog.error("Senha alterada, mas não foi possível atualizar a credencial salva no Windows.", exception);
+            }
+            try {
+                AutomaticMappingRestoreService.updatePasswordIfEnabled(URI.create(endpoint).getHost(),
+                        username, newPassword);
+            } catch (Exception exception) {
+                // Do not report the Samba change as failed after an HTTP 200.
+                AppLog.error("Senha alterada, mas a reconexão automática precisa ser reativada.", exception);
+            }
         } finally {
             Arrays.fill(currentPassword, '\0');
             Arrays.fill(newPassword, '\0');

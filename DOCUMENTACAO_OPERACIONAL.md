@@ -365,13 +365,42 @@ O compartilhamento `Administracao`, apontado para a raiz do armazenamento, é mo
 
 O Windows não permite facilmente múltiplas credenciais simultâneas para o mesmo servidor. Uma conexão antiga com `192.168.0.93` pode causar mensagem de senha incorreta mesmo com a senha correta.
 
+Ao mapear pastas, o aplicativo procura letras livres de `F:` até `Z:`. Unidades já ocupadas por discos locais, outros servidores ou mapeamentos persistentes são ignoradas. Cada pasta e letra utilizada aparecem no log local. Se uma pasta não puder ser mapeada, as demais continuam sendo tentadas e a interface informa quando o resultado é parcial.
+
+Esse intervalo comporta no máximo **21 unidades**. Se um usuário tiver acesso a mais de 21 compartilhamentos, os demais continuam acessíveis pelo caminho `\\192.168.0.93\<nome do compartilhamento>`, mas não recebem letra. Para disponibilizar todos no Explorador sem esse limite, será preciso uma estratégia separada, como atalhos para os compartilhamentos, em vez de uma letra por pasta.
+
+Os novos mapeamentos são criados pela API de rede do Windows (`WNetAddConnection2`) com a opção `CONNECT_UPDATE_PROFILE`. Só são considerados concluídos quando aparecem em `HKCU:\Network`, são conexões ativas para o compartilhamento esperado e a letra pode ser aberta pela própria sessão do aplicativo. Isso faz o Windows lembrar as letras após sair do aplicativo ou reiniciar. As unidades são específicas do usuário Windows que executou o programa: não execute o Royal Server Access como outro usuário ou em uma sessão elevada se as pastas devem aparecer no Explorador normal do usuário. Uma unidade persistente pode aparecer inicialmente como **Desconectada** após o login até que a rede e o servidor estejam disponíveis; isso não significa necessariamente que o registro foi perdido.
+
+O programa ainda grava a credencial comum no **Gerenciador de Credenciais do Windows**, mas alguns computadores não a reutilizam na reconexão após reiniciar. Por isso a versão nova inclui um iniciador separado e sem janela (`Royal Server Access Restore.exe`). Ao mapear pastas, ou ao entrar no programa com senha válida quando já há unidades lembradas para `192.168.0.93`, o programa registra esse iniciador em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Ele inicia somente na sessão Windows do usuário atual, espera a rede estar disponível por até cerca de um minuto e autentica uma conexão SMB. As letras já salvas em `HKCU:\Network` não são apagadas nem renumeradas.
+
+A senha da reconexão fica em uma **credencial genérica própria do programa** no Gerenciador de Credenciais do Windows, com destino `RoyalMax.RoyalServerAccess:192.168.0.93` e persistência no computador. Ao contrário da credencial comum de domínio, essa entrada é lida explicitamente pelo auxiliar; o Windows não precisa escolhê-la sozinho. A senha não é gravada em texto aberto em arquivo, manifesto, `samba.properties`, registro de inicialização ou log. O diagnóstico de cada inicialização fica em `%APPDATA%\RoyalServerAccess\auto-restore.log`. A credencial pertence ao perfil Windows que fez o mapeamento. Se a senha Samba mudar fora do aplicativo, entre novamente com a senha nova para atualizar a reconexão. Uma troca de senha bem-sucedida pelo aplicativo também atualiza a entrada própria. O botão **Limpar mapeamentos** remove o registro de inicialização, as duas credenciais desse servidor e qualquer arquivo protegido deixado pela versão de teste anterior, além das unidades deste servidor.
+
+Para ativar a reconexão em unidades **já existentes**, instale a nova versão, abra o programa na mesma conta Windows e use **Entrar** com a senha Samba atual. Não é necessário limpar ou mapear todas as unidades novamente. Verifique no log local a mensagem `Reconexão automática ativada` antes do teste com reinício.
+
+Como qualquer senha armazenada no computador, essa conveniência exige que a conta Windows esteja protegida e que o equipamento não seja compartilhado sem controle. O Gerenciador de Credenciais protege a entrada em repouso, mas um processo executado com a própria conta Windows do usuário poderá lê-la. A reconexão depende da rede, do serviço SMB e da senha permanecer válida; não há garantia de sucesso em todas as condições externas.
+
+Para verificar no computador, antes e depois de reiniciar:
+
+```powershell
+net use
+Get-ChildItem HKCU:\Network
+cmdkey /list:192.168.0.93
+cmdkey /list:RoyalMax.RoyalServerAccess:192.168.0.93
+reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v RoyalServerAccessRestore
+Get-Content "$env:APPDATA\RoyalServerAccess\auto-restore.log" -Tail 20
+```
+
 Inspecionar conexões:
 
 ```powershell
 net use
 ```
 
-O botão **Limpar mapeamentos** remove somente conexões relacionadas ao servidor `192.168.0.93`. Quando algo é removido, o aplicativo informa que o computador precisa ser reiniciado e oferece a opção de reiniciar imediatamente.
+O botão **Limpar mapeamentos** fica disponível desde a abertura do aplicativo e não exige que o usuário informe credenciais. Ele remove somente conexões relacionadas ao servidor `192.168.0.93`. Durante a execução da limpeza, o botão é temporariamente desabilitado para impedir comandos duplicados. Quando algo é removido, o aplicativo informa que o computador precisa ser reiniciado e oferece a opção de reiniciar imediatamente.
+
+A limpeza usa `WNetCancelConnection2` para remover também unidades persistentes **desconectadas** que ainda aparecem em `HKCU:\Network`, mesmo quando `net use` mostra lista vazia. Antes de tocar em cada letra, o programa verifica se o caminho salvo pertence ao servidor `192.168.0.93`. Se o Windows deixar um registro antigo após o cancelamento, somente a chave daquela letra é removida. O botão também apaga a credencial salva para esse servidor.
+
+O botão **Atualizar pastas** está temporariamente desabilitado em todas as situações. Para reativá-lo em uma versão futura, altere `REFRESH_MAPPINGS_ENABLED` para `true` em `SambaManagerApp.java`, teste o fluxo e publique uma nova versão.
 
 Após mudar grupos ou permissões, também pode ser necessário:
 
@@ -466,7 +495,7 @@ Confirme que a versão do manifesto é maior que a instalada e que o `downloadUr
 
 - nunca registrar senhas em logs;
 - nunca colocar senhas em scripts ou no repositório;
-- nunca distribuir chaves privadas `.key`;
+- nunca distribuir chaves privadas `.key`;wh
 - manter acesso ao SSH e ao `sudo` restrito ao administrador;
 - fazer backup de `/etc/samba/smb.conf` e `/etc/samba-password-api/` antes de alterações importantes;
 - validar JSON com `python -m json.tool`;

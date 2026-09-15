@@ -3,12 +3,13 @@ package br.com.suaempresa.sambamanager;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.nio.file.Path;
 
 import br.com.suaempresa.sambamanager.service.AppLog;
+import br.com.suaempresa.sambamanager.service.AutomaticMappingRestoreService;
 import br.com.suaempresa.sambamanager.service.AuditService;
 import br.com.suaempresa.sambamanager.service.PasswordChangeService;
 import br.com.suaempresa.sambamanager.service.SambaConfig;
@@ -47,6 +48,8 @@ import javafx.stage.Stage;
 public class SambaManagerApp extends Application {
     private static final String ADMIN_SHARE = "Administracao";
     private static final String EASTER_EGG_SEQUENCE = "0117721123826";
+    // Altere para true quando a atualização manual de mapeamentos for reativada.
+    private static final boolean REFRESH_MAPPINGS_ENABLED = false;
     private final SambaConfig config = SambaConfig.load();
     private final WindowsDriveMappingService mappingService = new WindowsDriveMappingService();
     private final PasswordChangeService passwordChangeService = new PasswordChangeService();
@@ -58,7 +61,7 @@ public class SambaManagerApp extends Application {
     public void start(Stage stage) {
         AppLog.info("Aplicativo iniciado. Arquivo de log: " + AppLog.file());
         TextField username = new TextField();
-        username.setPromptText("ex.: nome.ultimo");
+        username.setPromptText("ex.: nome.sobrenome");
         PasswordField password = new PasswordField();
         TextField visibleLoginPassword = visibleCopy(password);
 
@@ -102,8 +105,11 @@ public class SambaManagerApp extends Application {
         Button map = new Button("Mapear pastas");
         map.setDisable(true);
         Button refresh = new Button("Atualizar pastas");
-        refresh.setDisable(true);
+        refresh.setDisable(!REFRESH_MAPPINGS_ENABLED);
         Button clearMappings = new Button("Limpar mapeamentos");
+        // A limpeza não depende de autenticação: ela atua nas conexões SMB já
+        // existentes deste computador e deve estar disponível desde a abertura.
+        clearMappings.setDisable(false);
         Button changePassword = new Button("Alterar senha");
         changePassword.setDisable(true);
         username.setOnAction(event -> password.requestFocus());
@@ -149,6 +155,8 @@ public class SambaManagerApp extends Application {
             }
             String currentUser = username.getText().trim();
             char[] currentPassword = password.getText().toCharArray();
+            char[] passwordForRestore = currentPassword.clone();
+            java.util.concurrent.atomic.AtomicBoolean restoreFailed = new java.util.concurrent.atomic.AtomicBoolean();
             AppLog.info("Usuário " + currentUser + " solicitou verificação de acesso.");
             enter.setDisable(true);
             content.setDisable(true);
@@ -156,8 +164,22 @@ public class SambaManagerApp extends Application {
             Task<List<String>> task = new Task<>() {
                 @Override
                 protected List<String> call() throws Exception {
-                    return mappingService.checkAccessibleShares(config.server(), currentUser, currentPassword,
-                            config.shares());
+                    try {
+                        List<String> accessible = mappingService.checkAccessibleShares(config.server(), currentUser,
+                                currentPassword, config.shares());
+                        if (!accessible.isEmpty() && AutomaticMappingRestoreService.available()
+                                && AutomaticMappingRestoreService.hasRememberedMappings(config.server())) {
+                            try {
+                                AutomaticMappingRestoreService.enable(config.server(), currentUser, passwordForRestore);
+                            } catch (Exception failure) {
+                                AppLog.error("O acesso foi verificado, mas a reconexão automática não foi ativada.", failure);
+                                restoreFailed.set(true);
+                            }
+                        }
+                        return accessible;
+                    } finally {
+                        java.util.Arrays.fill(passwordForRestore, '\0');
+                    }
                 }
             };
             task.setOnSucceeded(done -> {
@@ -173,18 +195,23 @@ public class SambaManagerApp extends Application {
                         .toList();
                 content.setDisable(false);
                 map.setDisable(availableToMap.isEmpty());
-                refresh.setDisable(availableToMap.isEmpty());
+                refresh.setDisable(!REFRESH_MAPPINGS_ENABLED || availableToMap.isEmpty());
                 changePassword.setDisable(false);
                 enter.setDisable(false);
                 status.setText(administrator
                         ? "Acesso administrativo identificado em " + config.server()
                         : availableToMap.isEmpty()
-                        ? "Nenhuma pasta disponível para este usuário."
-                        : availableToMap.size() + " pasta(s) disponível(is) em " + config.server());
+                                ? "Nenhuma pasta disponível para este usuário."
+                                : availableToMap.size() + " pasta(s) disponível(is) em " + config.server());
 
                 if (administrator) {
                     AppLog.info("Usuário " + currentUser
-                            + " identificado como administrador. Somente o compartilhamento Administracao será mapeado.");
+                            + " identificado como administrador. Somente o compartilhamento Administração será mapeado.");
+                }
+                if (restoreFailed.get()) {
+                    new Alert(Alert.AlertType.WARNING,
+                            "As pastas estão acessíveis, mas a reconexão automática não foi ativada. Consulte o log do programa.",
+                            ButtonType.OK).show();
                 }
 
             });
@@ -217,15 +244,18 @@ public class SambaManagerApp extends Application {
             };
             task.setOnSucceeded(done -> {
                 map.setDisable(false);
-                refresh.setDisable(false);
+                refresh.setDisable(!REFRESH_MAPPINGS_ENABLED);
                 password.clear();
-                // status.setText("Mapeamento concluído: " + String.join(", ", task.getValue()));
-                status.setText("Mapeamento concluído: ");
+                List<String> drives = task.getValue();
+                status.setText(drives.size() == selected.size()
+                        ? "Mapeamento concluído: " + String.join(", ", drives)
+                        : "Mapeamento parcial: " + drives.size() + " de " + selected.size()
+                                + " pasta(s). Consulte o log.");
             });
             task.setOnFailed(failed -> {
                 AppLog.error("Falha no mapeamento.", task.getException());
                 map.setDisable(false);
-                refresh.setDisable(false);
+                refresh.setDisable(!REFRESH_MAPPINGS_ENABLED);
                 password.clear();
                 status.setText("Não foi possível concluir o mapeamento.");
                 showError(task.getException().getMessage());
@@ -257,14 +287,14 @@ public class SambaManagerApp extends Application {
             };
             task.setOnSucceeded(done -> {
                 map.setDisable(false);
-                refresh.setDisable(false);
+                refresh.setDisable(!REFRESH_MAPPINGS_ENABLED);
                 password.clear();
                 status.setText("Mapeamentos atualizados: " + String.join(", ", task.getValue()));
             });
             task.setOnFailed(failed -> {
                 AppLog.error("Falha na atualização dos mapeamentos.", task.getException());
                 map.setDisable(false);
-                refresh.setDisable(false);
+                refresh.setDisable(!REFRESH_MAPPINGS_ENABLED);
                 password.clear();
                 status.setText("Não foi possível atualizar os mapeamentos.");
                 showError(task.getException().getMessage());

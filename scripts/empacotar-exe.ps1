@@ -59,6 +59,7 @@ New-Item -ItemType Directory -Path $destination -Force | Out-Null
     --input target `
     --main-jar samba-manager-0.1.0.jar `
     --main-class br.com.suaempresa.sambamanager.SambaManagerApp `
+    --add-launcher "Royal Server Access Restore=packaging\restore-launcher.properties" `
     --module-path target\libs `
     --add-modules javafx.controls,javafx.graphics,javafx.base,java.net.http `
     --java-options "-Dsamba.manager.version=$Version" `
