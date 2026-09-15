@@ -251,6 +251,7 @@ public class SambaManagerApp extends Application {
                         ? "Mapeamento concluído: " + String.join(", ", drives)
                         : "Mapeamento parcial: " + drives.size() + " de " + selected.size()
                                 + " pasta(s). Consulte o log.");
+                showMappingResultAndOpenExplorer(drives.size(), selected.size());
             });
             task.setOnFailed(failed -> {
                 AppLog.error("Falha no mapeamento.", task.getException());
@@ -363,6 +364,28 @@ public class SambaManagerApp extends Application {
         Alert alert = new Alert(Alert.AlertType.ERROR, message);
         alert.setHeaderText(null);
         alert.showAndWait();
+    }
+
+    private void showMappingResultAndOpenExplorer(int mapped, int requested) {
+        if (mapped == 0) {
+            return;
+        }
+        String message = mapped == requested
+                ? "Pastas mapeadas com sucesso! Ao fechar esta mensagem, o Explorador abrirá em Este Computador."
+                : mapped + " de " + requested + " pasta(s) foram mapeadas. Consulte o log para ver as demais."
+                        + " Ao fechar esta mensagem, o Explorador abrirá em Este Computador.";
+        Alert result = new Alert(mapped == requested ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING,
+                message, ButtonType.OK);
+        result.setTitle("Mapeamento concluído");
+        result.setHeaderText(null);
+        result.showAndWait();
+        try {
+            new ProcessBuilder("explorer.exe", "shell:MyComputerFolder").start();
+            AppLog.info("Explorador de Arquivos aberto em Este Computador após o mapeamento.");
+        } catch (IOException exception) {
+            AppLog.error("Não foi possível abrir o Explorador após o mapeamento.", exception);
+            showError("As pastas foram mapeadas, mas não foi possível abrir o Explorador de Arquivos.");
+        }
     }
 
     private void recordConnectionAudit(String username, String appVersion, int accessibleCount) {
