@@ -8,10 +8,12 @@ public final class MappingStartupMain {
     private MappingStartupMain() { }
 
     public static void main(String[] args) {
+        AutomaticMappingRestoreService.recordStartupEvent("Auxiliar de reconexão iniciado.");
         try {
             AutomaticMappingRestoreService.restore(SambaConfig.load().server());
         } catch (Exception failure) {
-            // restore() records a password-free diagnostic in the user's profile.
+            AutomaticMappingRestoreService.recordStartupEvent("Auxiliar encerrado com falha: "
+                    + failure.getClass().getSimpleName() + ".");
             System.exit(1);
         }
     }

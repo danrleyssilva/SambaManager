@@ -116,13 +116,36 @@ public class WindowsDriveMappingService {
                 + "$credential=[pscredential]::new($user,$secure); " + preparation
                 + "$occupied=@{}; "
                 + "Get-PSDrive -PSProvider FileSystem | ForEach-Object { $occupied[$_.Name.ToUpperInvariant()]=$true }; "
-                + "Get-CimInstance Win32_LogicalDisk | ForEach-Object { $occupied[$_.DeviceID.TrimEnd(':').ToUpperInvariant()]=$true }; "
-                + "Get-ChildItem 'HKCU:\\Network' -ErrorAction SilentlyContinue | ForEach-Object { $occupied[$_.PSChildName.ToUpperInvariant()]=$true }; "
+                + "$existing=@{}; "
+                + "Get-CimInstance Win32_LogicalDisk | ForEach-Object { "
+                + "$name=$_.DeviceID.TrimEnd(':').ToUpperInvariant(); $occupied[$name]=$true; "
+                + "if($_.ProviderName -and -not $existing.ContainsKey($_.ProviderName)){ "
+                + "$existing[$_.ProviderName]=$name } }; "
+                + "Get-ChildItem 'HKCU:\\Network' -ErrorAction SilentlyContinue | Sort-Object PSChildName | "
+                + "ForEach-Object { $name=$_.PSChildName.ToUpperInvariant(); $occupied[$name]=$true; "
+                + "$saved=Get-ItemProperty -LiteralPath $_.PSPath; "
+                + "if($saved.RemotePath -and -not $existing.ContainsKey($saved.RemotePath)){ "
+                + "$existing[$saved.RemotePath]=$name } }; "
+                + "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -like ('\\\\'+$server+'\\*') } | "
+                + "ForEach-Object { if(-not $existing.ContainsKey($_.Root)){ "
+                + "$existing[$_.Root]=$_.Name.ToUpperInvariant() } }; "
                 + "$next=[int][char]'F'; foreach($share in $items){ $mapped=$false; "
+                + "$root='\\\\'+$server+'\\'+$share; "
+                + "if($existing.ContainsKey($root)){ "
+                + "$name=$existing[$root]; "
+                + "if(-not [SambaNetworkDrive]::Active(($name+':'),$root)){ "
+                + "$reuseCode=[SambaNetworkDrive]::Map(($name+':'),$root,$user,$env:SAMBA_MANAGER_PASSWORD); "
+                + "if($reuseCode -ne 0){ "
+                + "Write-Output ('SAMBA_MANAGER_MAP_ERROR:'+$share+' | Unidade '+$name+': ja existente; erro de reconexao '+$reuseCode); "
+                + "continue } }; "
+                + "if(-not [SambaNetworkDrive]::Active(($name+':'),$root)){ "
+                + "Write-Output ('SAMBA_MANAGER_MAP_ERROR:'+$share+' | Unidade '+$name+': ja existente, mas indisponivel'); "
+                + "continue }; "
+                + "Write-Output ('SAMBA_MANAGER_REUSED:'+$name+':'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($share))); "
+                + "continue }; "
                 + "while($next -le [int][char]'Z'){ $name=([char]$next).ToString(); $next++; "
                 + "if($occupied.ContainsKey($name)){ continue }; "
                 + "$occupied[$name]=$true; try { "
-                + "$root='\\\\'+$server+'\\'+$share; "
                 + "$code=[SambaNetworkDrive]::Map(($name+':'),$root,$user,$env:SAMBA_MANAGER_PASSWORD); "
                 + "if($code -eq 85 -or $code -eq 1202){ continue }; "
                 + "if($code -ne 0){ throw ('Erro de rede do Windows '+$code) }; "
@@ -131,6 +154,7 @@ public class WindowsDriveMappingService {
                 + "throw 'O Windows nao salvou o mapeamento persistente no perfil do usuario' }; "
                 + "if(-not [SambaNetworkDrive]::Active(($name+':'),$root)){ "
                 + "throw 'A unidade foi salva, mas nao ficou ativa na sessao do Windows' }; "
+                + "$existing[$root]=$name; "
                 + "Write-Output ('SAMBA_MANAGER_MAPPED:'+$name+':'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($share))); "
                 + "$mapped=$true; break "
                 + "} catch { "
@@ -144,14 +168,17 @@ public class WindowsDriveMappingService {
     private List<String> mappedDrives(String output, int requested) {
         List<String> drives = new ArrayList<>();
         for (String line : output.split("\\R")) {
-            if (line.startsWith("SAMBA_MANAGER_MAPPED:")) {
-                String data = line.substring("SAMBA_MANAGER_MAPPED:".length());
+            if (line.startsWith("SAMBA_MANAGER_MAPPED:") || line.startsWith("SAMBA_MANAGER_REUSED:")) {
+                boolean reused = line.startsWith("SAMBA_MANAGER_REUSED:");
+                String marker = reused ? "SAMBA_MANAGER_REUSED:" : "SAMBA_MANAGER_MAPPED:";
+                String data = line.substring(marker.length());
                 int separator = data.indexOf(':');
                 if (separator > 0) {
                     String letter = data.substring(0, separator) + ":";
                     String share = new String(Base64.getDecoder().decode(data.substring(separator + 1)), StandardCharsets.UTF_8);
                     drives.add(letter);
-                    AppLog.info("Compartilhamento " + share + " mapeado em " + letter + ".");
+                    AppLog.info("Compartilhamento " + share + (reused ? " já existente em " : " mapeado em ")
+                            + letter + ".");
                 }
             } else if (line.startsWith("SAMBA_MANAGER_MAP_ERROR:")) {
                 AppLog.info("Falha em um compartilhamento: " + line.substring("SAMBA_MANAGER_MAP_ERROR:".length()));

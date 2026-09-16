@@ -1,0 +1,7 @@
+{
+    "version":  "5.8",
+    "downloadUrl":  "https://192.168.0.93:8443/releases/RoyalServerAccess-5.8.exe",
+    "sha256":  "79c8af0f4a988620846231b3dfc7fdc07a0db2522e3d745211c7551a56545909",
+    "required":  false,
+    "notes":  "Corrigida a reconexão automática das pastas após reiniciar o computador."
+}

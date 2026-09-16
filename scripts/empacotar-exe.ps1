@@ -44,7 +44,28 @@ if (-not $wixCommandsAvailable) {
 }
 
 mvn clean package
+if ($LASTEXITCODE -ne 0) {
+    throw "A compilacao Java falhou. O instalador nao sera gerado com arquivos antigos."
+}
 mvn dependency:copy-dependencies "-DoutputDirectory=target\libs"
+if ($LASTEXITCODE -ne 0) {
+    throw "As bibliotecas Java nao foram copiadas. O instalador nao sera gerado."
+}
+
+$mainJar = Join-Path $projectRoot "target\samba-manager-0.1.0.jar"
+if (-not (Test-Path -LiteralPath $mainJar -PathType Leaf)) {
+    throw "O aplicativo compilado nao foi encontrado: $mainJar"
+}
+$jarTool = Join-Path (Split-Path -Parent $JpackagePath) "jar.exe"
+if (-not (Test-Path -LiteralPath $jarTool -PathType Leaf)) {
+    throw "jar.exe nao foi encontrado ao lado do jpackage.exe."
+}
+$jarContents = & $jarTool tf $mainJar
+if ($LASTEXITCODE -ne 0 -or
+        $jarContents -notcontains "br/com/suaempresa/sambamanager/MappingStartupMain.class" -or
+        $jarContents -notcontains "samba.properties") {
+    throw "O pacote Java nao contem o auxiliar de reconexao ou a configuracao Samba."
+}
 
 $destination = Join-Path $projectRoot ("dist-installer-" + $Version)
 New-Item -ItemType Directory -Path $destination -Force | Out-Null

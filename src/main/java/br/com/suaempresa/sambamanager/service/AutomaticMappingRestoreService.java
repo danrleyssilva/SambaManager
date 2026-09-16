@@ -37,8 +37,7 @@ public final class AutomaticMappingRestoreService {
         try {
             AppLog.info("Reconexão automática: salvando credencial própria no Windows (senha não registrada).");
             WindowsCredentialService.saveForAutomaticRestore(server, user, password);
-            run("reg.exe", "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ",
-                    "/d", "\"" + launcher + "\"", "/f");
+            registerStartup(launcher);
             AppLog.info("Reconexão automática: inicialização registrada no perfil Windows atual.");
             AppLog.info("Reconexão automática ativada para " + server
                     + " no perfil atual do Windows. Senha no Gerenciador de Credenciais; não registrada no log.");
@@ -73,6 +72,10 @@ public final class AutomaticMappingRestoreService {
         return process.waitFor() == 0;
     }
 
+    public static void recordStartupEvent(String message) {
+        restoreLog(message);
+    }
+
     public static void restore(String server) throws Exception {
         restoreLog("Iniciando reconexão automática de " + server + " na sessão atual do Windows.");
         String script = """
@@ -90,6 +93,15 @@ public final class AutomaticMappingRestoreService {
                     }
                     [DllImport("mpr.dll", CharSet=CharSet.Unicode, EntryPoint="WNetAddConnection2W")]
                     public static extern uint Connect(ref NETRESOURCE resource, string password, string user, uint flags);
+                    [DllImport("mpr.dll", CharSet=CharSet.Unicode, EntryPoint="WNetCancelConnection2W")]
+                    public static extern uint Cancel(string local, uint flags, bool force);
+                    [DllImport("mpr.dll", CharSet=CharSet.Unicode, EntryPoint="WNetGetConnectionW")]
+                    private static extern uint WNetGetConnection(string local, StringBuilder remote, ref uint length);
+                    public static string ConnectedRemote(string local) {
+                        StringBuilder remote = new StringBuilder(1024);
+                        uint length = (uint)remote.Capacity;
+                        return WNetGetConnection(local, remote, ref length) == 0 ? remote.ToString() : null;
+                    }
 
                     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
                     private struct CREDENTIAL {
@@ -128,9 +140,10 @@ public final class AutomaticMappingRestoreService {
                 $prefix='\\\\'+$server+'\\'
                 $saved=@(Get-ChildItem 'HKCU:\\Network' -ErrorAction SilentlyContinue | ForEach-Object {
                     $entry=Get-ItemProperty -LiteralPath $_.PSPath
-                    if ($null -ne $entry.RemotePath -and
+                    if ($_.PSChildName -match '^[A-Za-z]$' -and $null -ne $entry.RemotePath -and
                             $entry.RemotePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) {
-                        [pscustomobject]@{ Remote=$entry.RemotePath; User=$entry.UserName }
+                        [pscustomobject]@{ Local=($_.PSChildName.ToUpperInvariant()+':');
+                            Remote=$entry.RemotePath; User=$entry.UserName }
                     }
                 })
                 if ($saved.Count -eq 0) { 'Nenhuma unidade lembrada para este servidor'; exit 0 }
@@ -156,18 +169,56 @@ public final class AutomaticMappingRestoreService {
                         Write-Output 'ROYAL_RESTORE_DIAG:ACCOUNT_MISMATCH'
                         exit 1
                     }
-                    $connected=$false
-                    for ($attempt=1; $attempt -le 12 -and -not $connected; $attempt++) {
-                        foreach ($item in $saved) {
+                    $pending=@($saved)
+                    $restored=0
+                    $lastCode=0
+                    for ($attempt=1; $attempt -le 12 -and $pending.Count -gt 0; $attempt++) {
+                        $remaining=@()
+                        foreach ($item in $pending) {
+                            $active=[RoyalRestoreNetwork]::ConnectedRemote($item.Local)
+                            $sameRemote=$active -and [string]::Equals($active,$item.Remote,
+                                    [StringComparison]::OrdinalIgnoreCase)
+                            $localPath=$item.Local+'\\'
+                            if ($sameRemote -and (Test-Path -LiteralPath $localPath -ErrorAction SilentlyContinue)) {
+                                Write-Output ('ROYAL_RESTORE_LETTER:'+$item.Local+':ACCESSIBLE')
+                                $restored++
+                                continue
+                            }
+                            if ($active -and -not $sameRemote) {
+                                Write-Output ('ROYAL_RESTORE_DIAG:LETTER_CONFLICT:'+$item.Local)
+                                exit 1
+                            }
+                            if ($sameRemote) {
+                                # O caminho foi lembrado, mas o acesso falhou; soltamos só esta sessão.
+                                $cancelCode=[RoyalRestoreNetwork]::Cancel($item.Local,0,$false)
+                                if ($cancelCode -ne 0 -and $cancelCode -ne 2250) {
+                                    Write-Output ('ROYAL_RESTORE_DIAG:LETTER_DISCONNECT:'+$item.Local+':'+$cancelCode)
+                                    exit 1
+                                }
+                            }
                             $resource=New-Object RoyalRestoreNetwork+NETRESOURCE
                             $resource.Type=1
+                            $resource.LocalName=$item.Local
                             $resource.RemoteName=$item.Remote
-                            # A conexão sem letra autentica a sessão SMB; as letras já estão em HKCU:\\Network.
-                            $code=[RoyalRestoreNetwork]::Connect([ref]$resource,$password,$user,0)
+                            # Reconecta somente a letra lembrada para este servidor e perfil.
+                            $code=[RoyalRestoreNetwork]::Connect([ref]$resource,$password,$user,1)
+                            if ($code -eq 85) {
+                                # Desliga apenas uma sessão antiga desta letra, sem apagar o perfil.
+                                $cancelCode=[RoyalRestoreNetwork]::Cancel($item.Local,0,$false)
+                                if ($cancelCode -eq 0 -or $cancelCode -eq 2250) {
+                                    $code=[RoyalRestoreNetwork]::Connect([ref]$resource,$password,$user,1)
+                                }
+                            }
                             if ($code -eq 0) {
-                                'Sessao SMB autenticada para '+$server+' (codigo '+$code+')'
-                                $connected=$true
-                                break
+                                if (Test-Path -LiteralPath $localPath -ErrorAction SilentlyContinue) {
+                                    Write-Output ('ROYAL_RESTORE_LETTER:'+$item.Local+':ACCESSIBLE')
+                                    $restored++
+                                } else {
+                                    Write-Output ('ROYAL_RESTORE_LETTER:'+$item.Local+':CONNECTED_NOT_ACCESSIBLE')
+                                    $lastCode=1201
+                                    $remaining += $item
+                                }
+                                continue
                             }
                             if ($code -eq 1219) {
                                 Write-Output 'ROYAL_RESTORE_DIAG:SMB_ACCOUNT_CONFLICT:1219'
@@ -177,14 +228,21 @@ public final class AutomaticMappingRestoreService {
                                 Write-Output ('ROYAL_RESTORE_DIAG:SMB_AUTH:'+ $code)
                                 exit 1
                             }
+                            if ($code -eq 85 -or $code -eq 1202) {
+                                Write-Output ('ROYAL_RESTORE_DIAG:LETTER_ALREADY_USED:'+$item.Local+':'+$code)
+                                exit 1
+                            }
                             $lastCode=$code
+                            $remaining += $item
                         }
-                        if (-not $connected -and $attempt -lt 12) { Start-Sleep -Seconds 5 }
+                        $pending=@($remaining)
+                        if ($pending.Count -gt 0 -and $attempt -lt 12) { Start-Sleep -Seconds 5 }
                     }
-                    if (-not $connected) {
+                    if ($pending.Count -gt 0) {
                         Write-Output ('ROYAL_RESTORE_DIAG:SMB_NETWORK:'+ $lastCode)
                         exit 1
                     }
+                    Write-Output ('ROYAL_RESTORE_DONE:'+$restored+'/'+$saved.Count)
                 } finally { $credential=$null; $password=$null }
                 """;
         try {
@@ -230,6 +288,9 @@ public final class AutomaticMappingRestoreService {
         int exit = process.waitFor();
         if (exit != 0) {
             // PowerShell's error output could contain sensitive values; never include it in a log.
+            output.lines().map(String::trim)
+                    .filter(line -> line.startsWith("ROYAL_RESTORE_LETTER:"))
+                    .forEach(AutomaticMappingRestoreService::restoreLog);
             String diagnosis = output.lines().map(String::trim)
                     .filter(line -> line.startsWith("ROYAL_RESTORE_DIAG:"))
                     .map(line -> line.substring("ROYAL_RESTORE_DIAG:".length()))
@@ -239,8 +300,32 @@ public final class AutomaticMappingRestoreService {
         return output;
     }
 
-    private static void run(String... command) throws Exception {
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+    private static void registerStartup(Path launcher) throws Exception {
+        // reg.exe strips the quotes around /d in some Windows installations. Store and
+        // verify the literal quoted command, because the installed path contains spaces.
+        String script = """
+                $ErrorActionPreference='Stop'
+                $key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+                    'Software\\Microsoft\\Windows\\CurrentVersion\\Run')
+                if ($null -eq $key) { throw 'Chave de inicializacao indisponivel' }
+                try {
+                    # Build quotation marks by character code so ProcessBuilder/PowerShell
+                    # command-line parsing cannot consume them before the registry write.
+                    $quote=[char]34
+                    $command=$quote+$env:ROYAL_RESTORE_LAUNCHER+$quote
+                    $key.SetValue('RoyalServerAccessRestore',$command,
+                        [Microsoft.Win32.RegistryValueKind]::String)
+                    $stored=[string]$key.GetValue('RoyalServerAccessRestore')
+                    if ($stored -ne $command -or $stored[0] -ne $quote -or
+                            $stored[$stored.Length-1] -ne $quote) {
+                        throw 'Inicializacao nao confirmada'
+                    }
+                } finally { $key.Close() }
+                """;
+        ProcessBuilder builder = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
+                "-Command", script).redirectErrorStream(true);
+        builder.environment().put("ROYAL_RESTORE_LAUNCHER", launcher.toString());
+        Process process = builder.start();
         process.getInputStream().readAllBytes();
         if (process.waitFor() != 0) {
             throw new IllegalStateException("Não foi possível registrar a reconexão na inicialização do Windows.");
