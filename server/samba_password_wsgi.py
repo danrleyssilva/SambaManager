@@ -91,6 +91,34 @@ def app_version(start_response):
     return json_response(start_response, "200 OK", manifest)
 
 
+def configured_shares():
+    """Read Samba's effective share names, including smb.conf include files."""
+    result = subprocess.run(["/usr/bin/testparm", "-s"], capture_output=True,
+                            text=True, timeout=10, check=True)
+    shares = []
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"\s*\[([^\]]+)\]\s*", line)
+        if not match:
+            continue
+        name = match.group(1)
+        if name.lower() in {"global", "homes", "printers", "print$"}:
+            continue
+        # The Windows client transports names separated by | and maps UNC paths.
+        if (not 1 <= len(name) <= 80 or any(character in name for character in "|/\\")
+                or any(ord(character) < 32 for character in name)):
+            logging.warning("share-catalog skipped invalid share name=%r", name)
+            continue
+        if name not in shares:
+            shares.append(name)
+    if not shares:
+        raise ValueError("Nenhum compartilhamento encontrado no Samba")
+    return shares
+
+
+def share_catalog(start_response):
+    return json_response(start_response, "200 OK", {"shares": configured_shares()})
+
+
 def change_password(username, current_password, new_password):
     account = pwd.getpwnam(username)
     result = subprocess.run(
@@ -137,6 +165,13 @@ def app(environ, start_response):
         if method == "GET" and path == "/v1/app-version":
             logging.info("update-check source=%s", source)
             return app_version(start_response)
+        if method == "GET" and path == "/v1/shares":
+            logging.info("share-catalog source=%s", source)
+            try:
+                return share_catalog(start_response)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+                logging.exception("share-catalog unavailable source=%s", source)
+                return response(start_response, "503 Service Unavailable", "Lista de pastas indisponível.")
         if method == "GET" and path.startswith("/releases/"):
             filename = path.removeprefix("/releases/")
             logging.info("update-download source=%s file=%s", source, filename)

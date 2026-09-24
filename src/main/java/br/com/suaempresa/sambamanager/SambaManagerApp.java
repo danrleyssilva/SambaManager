@@ -9,10 +9,12 @@ import java.util.List;
 import java.util.Optional;
 
 import br.com.suaempresa.sambamanager.service.AppLog;
-import br.com.suaempresa.sambamanager.service.AutomaticMappingRestoreService;
 import br.com.suaempresa.sambamanager.service.AuditService;
+import br.com.suaempresa.sambamanager.service.AutomaticMappingRestoreService;
 import br.com.suaempresa.sambamanager.service.PasswordChangeService;
 import br.com.suaempresa.sambamanager.service.SambaConfig;
+import br.com.suaempresa.sambamanager.service.ShareCatalogService;
+import br.com.suaempresa.sambamanager.service.ShareHierarchy;
 import br.com.suaempresa.sambamanager.service.UpdateInfo;
 import br.com.suaempresa.sambamanager.service.UpdateInstallerLauncher;
 import br.com.suaempresa.sambamanager.service.UpdateService;
@@ -24,6 +26,7 @@ import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Group;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -32,12 +35,14 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.image.Image;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
@@ -55,7 +60,11 @@ public class SambaManagerApp extends Application {
     private final PasswordChangeService passwordChangeService = new PasswordChangeService();
     private final AuditService auditService = new AuditService();
     private final UpdateService updateService = new UpdateService();
+    private final ShareCatalogService shareCatalogService = new ShareCatalogService();
     private final List<CheckBox> shareBoxes = new ArrayList<>();
+
+    private record AccessCheck(List<String> catalog, List<String> accessible, List<String> newShares,
+            List<String> newDrives, boolean localCatalog, boolean automaticMappingFailed) { }
 
     @Override
     public void start(Stage stage) {
@@ -78,29 +87,7 @@ public class SambaManagerApp extends Application {
         shares.setHgap(26);
         shares.setVgap(8);
         shares.setPadding(new Insets(2, 0, 2, 0));
-        for (int index = 0; index < config.shares().size(); index++) {
-            String share = config.shares().get(index);
-            CheckBox box = new CheckBox();
-            box.setUserData(share);
-            // Apenas informa o acesso encontrado; a seleção não é editável pelo usuário.
-            // Mantemos o controle visualmente ativo para o texto não ficar acinzentado.
-            box.setMouseTransparent(true);
-            box.setFocusTraversable(false);
-            Label denied = new Label("×");
-            denied.setMouseTransparent(true);
-            denied.setStyle("-fx-text-fill: #c62828; -fx-font-size: 15px; -fx-font-weight: bold;");
-            denied.setTranslateY(-1);
-            denied.visibleProperty().bind(box.selectedProperty().not());
-            StackPane indicator = new StackPane(box, denied);
-            Label name = new Label(share);
-            name.setStyle("-fx-text-fill: black;");
-            shareBoxes.add(box);
-            HBox shareRow = new HBox(4, indicator, name);
-            box.getProperties().put("shareRow", shareRow);
-            if (!ADMIN_SHARE.equals(share)) {
-                shares.add(shareRow, index % 2, index / 2);
-            }
-        }
+        populateShareCatalog(shares, config.shares());
 
         Button map = new Button("Mapear pastas");
         map.setDisable(true);
@@ -139,7 +126,13 @@ public class SambaManagerApp extends Application {
         HBox shareArea = new HBox(shares);
         shareArea.setAlignment(Pos.CENTER);
         shareArea.setMaxWidth(Double.MAX_VALUE);
-        VBox content = new VBox(9, sharesTitle, shareArea);
+        ScrollPane shareViewport = new ScrollPane(shareArea);
+        shareViewport.setFitToWidth(true);
+        shareViewport.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        shareViewport.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        shareViewport.setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
+        VBox content = new VBox(9, sharesTitle, shareViewport);
+        VBox.setVgrow(shareViewport, Priority.ALWAYS);
         content.setPadding(new Insets(24, 0, 0, 0));
         content.setDisable(true);
 
@@ -156,19 +149,36 @@ public class SambaManagerApp extends Application {
             String currentUser = username.getText().trim();
             char[] currentPassword = password.getText().toCharArray();
             char[] passwordForRestore = currentPassword.clone();
+            char[] passwordForNewShares = currentPassword.clone();
             java.util.concurrent.atomic.AtomicBoolean restoreFailed = new java.util.concurrent.atomic.AtomicBoolean();
             AppLog.info("Usuário " + currentUser + " solicitou verificação de acesso.");
             enter.setDisable(true);
             content.setDisable(true);
             status.setText("Verificando permissões…");
-            Task<List<String>> task = new Task<>() {
+            Task<AccessCheck> task = new Task<>() {
                 @Override
-                protected List<String> call() throws Exception {
+                protected AccessCheck call() throws Exception {
                     try {
+                        List<String> catalog;
+                        boolean localCatalog = false;
+                        try {
+                            catalog = shareCatalogService.fetch(config.sharesApiUrl());
+                        } catch (Exception failure) {
+                            AppLog.error("Não foi possível carregar a lista atual do servidor; usando a lista local.", failure);
+                            catalog = config.shares();
+                            localCatalog = true;
+                        }
                         List<String> accessible = mappingService.checkAccessibleShares(config.server(), currentUser,
-                                currentPassword, config.shares());
-                        if (!accessible.isEmpty() && AutomaticMappingRestoreService.available()
-                                && AutomaticMappingRestoreService.hasRememberedMappings(config.server())) {
+                                currentPassword, catalog);
+                        List<String> remembered;
+                        try {
+                            remembered = mappingService.rememberedShares(config.server(), currentUser);
+                        } catch (Exception failure) {
+                            AppLog.error("Não foi possível consultar os mapeamentos anteriores.", failure);
+                            remembered = List.of();
+                        }
+                        if (!accessible.isEmpty() && !remembered.isEmpty()
+                                && AutomaticMappingRestoreService.available()) {
                             try {
                                 AutomaticMappingRestoreService.enable(config.server(), currentUser, passwordForRestore);
                             } catch (Exception failure) {
@@ -176,21 +186,48 @@ public class SambaManagerApp extends Application {
                                 restoreFailed.set(true);
                             }
                         }
-                        return accessible;
+                        boolean administrator = accessible.contains(ADMIN_SHARE);
+                        List<String> rememberedForUser = remembered;
+                        List<String> newShares = localCatalog || administrator ? List.of()
+                                : accessible.stream()
+                                        .filter(share -> config.shares().stream()
+                                                .noneMatch(existing -> existing.equalsIgnoreCase(share)))
+                                        .filter(share -> rememberedForUser.stream()
+                                                .noneMatch(existing -> existing.equalsIgnoreCase(share)))
+                                        .toList();
+                        List<String> newDrives = List.of();
+                        boolean mappingFailed = false;
+                        if (!remembered.isEmpty() && !newShares.isEmpty()) {
+                            try {
+                                AppLog.info("Novos compartilhamentos autorizados para " + currentUser + ": "
+                                        + String.join(", ", newShares));
+                                newDrives = mappingService.map(config.server(), currentUser,
+                                        passwordForNewShares.clone(), newShares);
+                                mappingFailed = newDrives.size() != newShares.size();
+                            } catch (Exception failure) {
+                                AppLog.error("Não foi possível mapear automaticamente as novas pastas.", failure);
+                                mappingFailed = true;
+                            }
+                        }
+                        return new AccessCheck(catalog, accessible, newShares, newDrives,
+                                localCatalog, mappingFailed);
                     } finally {
                         java.util.Arrays.fill(passwordForRestore, '\0');
+                        java.util.Arrays.fill(passwordForNewShares, '\0');
                     }
                 }
             };
             task.setOnSucceeded(done -> {
-                List<String> accessible = task.getValue();
+                AccessCheck result = task.getValue();
+                List<String> accessible = result.accessible();
                 AppLog.info("Verificação concluída. Pastas disponíveis: " + accessible.size() + " - "
                         + String.join(", ", accessible));
                 recordConnectionAudit(currentUser, currentVersion, accessible.size());
                 boolean administrator = accessible.contains(ADMIN_SHARE);
+                populateShareCatalog(shares, result.catalog());
                 updateShareView(shares, accessible, administrator);
                 List<String> availableToMap = shareBoxes.stream()
-                        .filter(CheckBox::isSelected)
+                        .filter(this::isShareAccessible)
                         .map(this::shareOf)
                         .toList();
                 content.setDisable(false);
@@ -203,6 +240,27 @@ public class SambaManagerApp extends Application {
                         : availableToMap.isEmpty()
                                 ? "Nenhuma pasta disponível para este usuário."
                                 : availableToMap.size() + " pasta(s) disponível(is) em " + config.server());
+
+                if (result.localCatalog()) {
+                    status.setText(status.getText() + " Lista local em uso.");
+                }
+                if (!result.newShares().isEmpty()) {
+                    String names = String.join(", ", result.newShares());
+                    if (result.automaticMappingFailed()) {
+                        status.setText("Nova pasta disponível; mapeamento automático incompleto.");
+                        new Alert(Alert.AlertType.WARNING,
+                                "Nova(s) pasta(s) disponível(is): " + names
+                                        + "\nNão foi possível mapear todas automaticamente. Use Mapear pastas.",
+                                ButtonType.OK).show();
+                    } else if (!result.newDrives().isEmpty()) {
+                        status.setText("Nova(s) pasta(s) mapeada(s): " + names);
+                        new Alert(Alert.AlertType.INFORMATION,
+                                "Nova(s) pasta(s) disponível(is) e mapeada(s): " + names,
+                                ButtonType.OK).show();
+                    } else {
+                        status.setText("Nova(s) pasta(s) disponível(is): " + names);
+                    }
+                }
 
                 if (administrator) {
                     AppLog.info("Usuário " + currentUser
@@ -225,7 +283,7 @@ public class SambaManagerApp extends Application {
         });
 
         map.setOnAction(event -> {
-            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(this::shareOf).toList();
+            List<String> selected = shareBoxes.stream().filter(this::isShareAccessible).map(this::shareOf).toList();
             if (selected.isEmpty()) {
                 showError("Selecione pelo menos uma pasta.");
                 return;
@@ -265,7 +323,7 @@ public class SambaManagerApp extends Application {
         });
 
         refresh.setOnAction(event -> {
-            List<String> selected = shareBoxes.stream().filter(CheckBox::isSelected).map(this::shareOf).toList();
+            List<String> selected = shareBoxes.stream().filter(this::isShareAccessible).map(this::shareOf).toList();
             if (selected.isEmpty()) {
                 showError("Selecione pelo menos uma pasta.");
                 return;
@@ -355,7 +413,10 @@ public class SambaManagerApp extends Application {
         }
         stage.setMinWidth(560);
         stage.setMinHeight(640);
-        stage.setScene(new Scene(root, 560, 640));
+        Scene scene = new Scene(root, 560, 640);
+        var shareStyles = SambaManagerApp.class.getResource("/styles/share-list.css");
+        if (shareStyles != null) scene.getStylesheets().add(shareStyles.toExternalForm());
+        stage.setScene(scene);
         stage.show();
         checkForUpdates(updateButton, currentVersion, status);
     }
@@ -433,6 +494,10 @@ public class SambaManagerApp extends Application {
 
     private String shareOf(CheckBox box) {
         return (String) box.getUserData();
+    }
+
+    private boolean isShareAccessible(CheckBox box) {
+        return Boolean.TRUE.equals(box.getProperties().get("shareAccessible"));
     }
 
     private void checkForUpdates(Button updateButton, String currentVersion, Label status) {
@@ -537,18 +602,98 @@ public class SambaManagerApp extends Application {
         }
     }
 
+    private void populateShareCatalog(GridPane shares, List<String> catalog) {
+        shareBoxes.clear();
+        for (String share : catalog) {
+            CheckBox box = new CheckBox();
+            box.setUserData(share);
+            // The check mark reports access; users cannot change it themselves.
+            box.setMouseTransparent(true);
+            box.setFocusTraversable(false);
+            Label denied = new Label("×");
+            denied.setMouseTransparent(true);
+            denied.setStyle("-fx-text-fill: #c62828; -fx-font-size: 15px; -fx-font-weight: bold;");
+            denied.setTranslateY(-1);
+            denied.visibleProperty().bind(box.selectedProperty().or(box.indeterminateProperty()).not());
+            StackPane indicator = new StackPane(box, denied);
+            Label name = new Label(share);
+            name.setStyle("-fx-text-fill: black;");
+            HBox row = new HBox(4, indicator, name);
+            row.setAlignment(Pos.CENTER_LEFT);
+            box.getProperties().put("shareRow", row);
+            box.getProperties().put("shareNameLabel", name);
+            box.getProperties().put("shareAccessible", false);
+            shareBoxes.add(box);
+        }
+        renderShareCatalog(shares, List.of(), false);
+    }
+
     private void updateShareView(GridPane shares, List<String> accessible, boolean administrator) {
+        for (CheckBox box : shareBoxes) {
+            boolean hasAccess = accessible.contains(shareOf(box));
+            box.getProperties().put("shareAccessible", hasAccess);
+            box.setIndeterminate(false);
+            box.setSelected(hasAccess);
+        }
+        renderShareCatalog(shares, accessible, administrator);
+    }
+
+    private void renderShareCatalog(GridPane shares, List<String> accessible, boolean administrator) {
         shares.getChildren().clear();
-        shareBoxes.forEach(box -> box.setSelected(false));
         List<CheckBox> visible = shareBoxes.stream()
                 .filter(box -> administrator == ADMIN_SHARE.equals(shareOf(box)))
                 .toList();
-        for (int index = 0; index < visible.size(); index++) {
-            CheckBox box = visible.get(index);
-            box.setSelected(accessible.contains(shareOf(box)));
-            HBox row = (HBox) box.getProperties().get("shareRow");
-            shares.add(row, index % 2, index / 2);
+        List<String> names = visible.stream().map(this::shareOf).toList();
+        var children = ShareHierarchy.childrenOf(names);
+        int index = 0;
+        for (CheckBox box : visible) {
+            String share = shareOf(box);
+            if (ShareHierarchy.parentOf(share, names) != null) continue;
+            shares.add(shareGroup(share, null, children, visible, accessible), index % 2, index / 2);
+            index++;
         }
+    }
+
+    private Node shareGroup(String share, String parent, java.util.Map<String, List<String>> children,
+            List<CheckBox> visible, List<String> accessible) {
+        CheckBox box = visible.stream().filter(item -> shareOf(item).equals(share)).findFirst().orElseThrow();
+        HBox row = (HBox) box.getProperties().get("shareRow");
+        Label name = (Label) box.getProperties().get("shareNameLabel");
+        name.setText(ShareHierarchy.childLabel(share, parent));
+        List<String> subshares = children.get(share);
+        if (subshares.isEmpty()) return row;
+
+        // An indeterminate checkbox is a group marker, not permission to map
+        // the parent share. Mapping still uses the separately stored access.
+        box.getStyleClass().add("share-group");
+        box.setAllowIndeterminate(true);
+        box.setSelected(false);
+        box.setIndeterminate(true);
+
+        VBox nested = new VBox(6);
+        for (String child : subshares) {
+            nested.getChildren().add(shareGroup(child, share, children, visible, accessible));
+        }
+        nested.setPadding(new Insets(2, 0, 3, 10));
+        nested.setVisible(false);
+        nested.setManaged(false);
+        long available = subshares.stream().filter(accessible::contains).count();
+        Button toggle = new Button("▸");
+        toggle.setFocusTraversable(false);
+        toggle.setStyle("-fx-background-color: transparent; -fx-padding: 0 3 0 0; -fx-font-size: 14px;");
+        toggle.setAccessibleText("Mostrar subpastas de " + share);
+        toggle.setOnAction(event -> {
+            boolean expanded = !nested.isVisible();
+            nested.setVisible(expanded);
+            nested.setManaged(expanded);
+            toggle.setText(expanded ? "▾" : "▸");
+            toggle.setAccessibleText((expanded ? "Ocultar" : "Mostrar") + " subpastas de " + share);
+        });
+        Label count = new Label(available > 0 ? "(" + available + " disponível)" : "(" + subshares.size() + " subpasta)");
+        count.setStyle("-fx-text-fill: #707070; -fx-font-size: 10px;");
+        HBox header = new HBox(2, toggle, row, count);
+        header.setAlignment(Pos.CENTER_LEFT);
+        return new VBox(3, header, nested);
     }
 
     private void offerRestart() {

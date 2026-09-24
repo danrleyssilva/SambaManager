@@ -1,0 +1,11 @@
+<?xml version="1.0" ?>
+<jpackage-state version="26.0.2" platform="windows">
+  <app-version>1.0</app-version>
+  <main-launcher name="SambaManager">
+    <description>SambaManager</description>
+  </main-launcher>
+  <add-launcher name="Royal Server Access Restore">
+    <description>SambaManager</description>
+    <win-menu>false</win-menu>
+    <win-shortcut>false</win-shortcut>
+  </add-launcher></jpackage-state>

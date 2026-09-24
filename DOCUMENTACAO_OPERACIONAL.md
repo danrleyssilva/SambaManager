@@ -99,6 +99,7 @@ Endpoints utilizados:
 | `POST` | `/v1/change-password` | Alterar a senha Samba do próprio usuário |
 | `POST` | `/v1/audit-login` | Registrar conexão validada pelo aplicativo |
 | `GET` | `/v1/app-version` | Consultar a versão publicada |
+| `GET` | `/v1/shares` | Ler os nomes atuais dos compartilhamentos configurados no Samba |
 | `GET` | `/releases/<arquivo.exe>` | Baixar o instalador |
 
 Somente endereços pertencentes a `allowed_networks` são aceitos.
@@ -403,6 +404,26 @@ O botão **Limpar mapeamentos** fica disponível desde a abertura do aplicativo 
 A limpeza usa `WNetCancelConnection2` para remover também unidades persistentes **desconectadas** que ainda aparecem em `HKCU:\Network`, mesmo quando `net use` mostra lista vazia. Antes de tocar em cada letra, o programa verifica se o caminho salvo pertence ao servidor `192.168.0.93`. Se o Windows deixar um registro antigo após o cancelamento, somente a chave daquela letra é removida. O botão também apaga a credencial salva para esse servidor.
 
 O botão **Atualizar pastas** está temporariamente desabilitado em todas as situações. Para reativá-lo em uma versão futura, altere `REFRESH_MAPPINGS_ENABLED` para `true` em `SambaManagerApp.java`, teste o fluxo e publique uma nova versão.
+
+### Compartilhamentos criados depois da instalação
+
+O backend lê as seções efetivas do Samba com `testparm -s` a cada consulta a `/v1/shares`; o nome não precisa entrar em uma nova compilação do aplicativo. Ao usar **Entrar**, o aplicativo baixa essa lista e testa cada compartilhamento com a conta Samba informada. A lista na tela passa a incluir os nomes novos, com marca de acesso somente quando o teste SMB é bem-sucedido. Se o catálogo HTTPS estiver indisponível, a lista local incorporada ao aplicativo é usada temporariamente e o status informa isso; nomes novos só aparecem quando o catálogo voltar.
+
+Se o Windows já mantiver uma conexão com o mesmo servidor por outro usuário Samba, a verificação dessa segunda conta falha por conflito de credenciais da sessão Windows. O aplicativo informa essa causa e registra um resumo das falhas por categoria, sem gravar a senha nem repetir uma mensagem para cada pasta. A limpeza dos mapeamentos continua sendo uma ação explícita do usuário; nunca é feita automaticamente durante a verificação.
+
+Na lista visual, um compartilhamento cujo nome começa com o nome exato de outro seguido de ` - ` fica recolhido sob ele. Por exemplo, `1 - Contabilidade - Controles` aparece sob `1 - Contabilidade` e pode ser expandido pela seta. Isso é somente organização da interface baseada nos nomes: cada compartilhamento ainda é verificado e mapeado separadamente, e o acesso ao filho não depende do acesso ao pai. Compartilhamentos com nomes sem esse padrão permanecem independentes. O catálogo ainda inclui `StorageRoot` e `BACKUPMAIN` durante os testes; a exclusão deles será feita depois.
+
+Itens que agrupam subpastas exibem o mesmo checkbox da lista no estado intermediário, com um quadrado preto interno em vez do X ou de um visto. Esse estado sinaliza apenas "grupo expansível": a permissão real do compartilhamento pai fica armazenada separadamente e não é inferida do checkbox, portanto o mapeamento só usa permissões verificadas.
+
+Se essa mesma conta Windows/Samba já tiver unidades lembradas de `192.168.0.93`, o aplicativo mapeia automaticamente os compartilhamentos **novos** que ela pode acessar, sem apagar ou renumerar as unidades existentes. A nova letra é salva para reconexão no próximo login do Windows. Quem ainda não tiver mapeamentos deve clicar em **Mapear pastas** após entrar. O comportamento administrativo continua especial: a conta com acesso a `Administracao` mapeia somente esse compartilhamento raiz.
+
+Para ativar essa função, atualize primeiro `server/samba_password_wsgi.py` no servidor conforme a seção 7 e reinicie `samba-password-gunicorn`. Confirme:
+
+```bash
+curl -ksS https://192.168.0.93:8443/v1/shares
+```
+
+O retorno deve conter `{"shares": [...]}` com os nomes atuais. Depois gere e teste uma nova versão do aplicativo. Quando criar outro compartilhamento, valide `sudo testparm -s`, recarregue o Samba conforme o procedimento da organização e entre novamente no aplicativo com um usuário autorizado. Não é necessário reiniciar o Gunicorn a cada novo compartilhamento: o catálogo é lido a cada consulta. O limite de letras `F:` a `Z:` continua valendo; se acabarem, o programa informa o mapeamento parcial.
 
 Após mudar grupos ou permissões, também pode ser necessário:
 

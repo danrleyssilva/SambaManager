@@ -3,3 +3,5 @@ target/
 .vscode/
 *.log
 logs/
+.output/
+__pycache__/

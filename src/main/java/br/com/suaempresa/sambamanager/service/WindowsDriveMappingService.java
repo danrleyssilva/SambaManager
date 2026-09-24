@@ -6,9 +6,32 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.LinkedHashSet;
 
 /** Uses Windows PowerShell so persisted SMB drives are created by Windows itself. */
 public class WindowsDriveMappingService {
+    /** Returns remembered share names for this server and Samba account in the current Windows profile. */
+    public List<String> rememberedShares(String server, String username) throws Exception {
+        String script = "$prefix='\\\\'+$env:SAMBA_MANAGER_SERVER+'\\'; "
+                + "$user=$env:SAMBA_MANAGER_USER; "
+                + "Get-ChildItem 'HKCU:\\Network' -ErrorAction SilentlyContinue | ForEach-Object { "
+                + "$entry=Get-ItemProperty -LiteralPath $_.PSPath; "
+                + "if($entry.RemotePath -and $entry.RemotePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) "
+                + "-and $entry.UserName -and ($entry.UserName.Equals($user,[StringComparison]::OrdinalIgnoreCase) "
+                + "-or $entry.UserName.EndsWith('\\'+$user,[StringComparison]::OrdinalIgnoreCase))){ "
+                + "$name=$entry.RemotePath.Substring($prefix.Length); "
+                + "Write-Output ('SAMBA_MANAGER_REMEMBERED:'+"
+                + "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))) } }";
+        String output = runPowerShell(script, server, username, new char[0], List.of());
+        LinkedHashSet<String> remembered = new LinkedHashSet<>();
+        output.lines().map(String::trim)
+                .filter(line -> line.startsWith("SAMBA_MANAGER_REMEMBERED:"))
+                .map(line -> line.substring("SAMBA_MANAGER_REMEMBERED:".length()))
+                .map(encoded -> new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8))
+                .forEach(remembered::add);
+        return List.copyOf(remembered);
+    }
+
     public List<String> map(String server, String username, char[] password, List<String> shares) throws Exception {
         if (!System.getProperty("os.name").toLowerCase().contains("win")) {
             throw new IllegalStateException("O mapeamento de unidades está disponível somente no Windows.");
@@ -265,16 +288,13 @@ public class WindowsDriveMappingService {
                 + "Write-Output ('SAMBA_MANAGER_ACCESS:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($share))) "
                 + "} catch { Write-Output ('SAMBA_MANAGER_ERROR:' + $share + ' | ' + $_.Exception.Message) } finally { Remove-PSDrive -Name $name -ErrorAction SilentlyContinue }; $index++ }";
         String output = runPowerShell(script, server, username, password, shares);
-        AppLog.info("Resposta do PowerShell na verificação: " + output.replaceAll("[\\r\\n]+", " | "));
+        AppLog.info("Resultado da verificação para " + username + " em " + server + ": "
+                + AccessCheckDiagnostics.summary(output));
         String normalized = output.toLowerCase();
-        if (normalized.contains("conex") && normalized.contains("servidor") && normalized.contains("nome de usu")) {
-            throw new IllegalStateException("Já existe uma conexão com " + server
-                    + " usando outras credenciais. Feche as conexões antigas desse servidor e tente novamente.");
-        }
-        if (normalized.contains("logon failure") || normalized.contains("password is not correct")
-                || normalized.contains("username or password") || normalized.contains("nome de usuário ou senha")
-                || normalized.contains("senha de rede")) {
-            throw new IllegalStateException("Usuário ou senha inválidos. Confira os dados e tente novamente.");
+        String diagnosis = AccessCheckDiagnostics.diagnosis(output, server);
+        if (diagnosis != null && !normalized.contains("samba_manager_access:")) {
+            AppLog.info("Verificação interrompida: " + diagnosis);
+            throw new IllegalStateException(diagnosis);
         }
         if (!normalized.contains("samba_manager_access:") && normalized.contains("samba_manager_error:")) {
             throw new IllegalStateException("Não foi possível verificar as pastas no servidor. Consulte o log para mais detalhes.");
