@@ -42,6 +42,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
@@ -670,11 +671,17 @@ public class SambaManagerApp extends Application {
         box.setSelected(false);
         box.setIndeterminate(true);
 
-        VBox nested = new VBox(6);
-        for (String child : subshares) {
-            nested.getChildren().add(shareGroup(child, share, children, visible, accessible));
+        VBox nested = new VBox(0);
+        for (int index = 0; index < subshares.size(); index++) {
+            String child = subshares.get(index);
+            boolean lastChild = index == subshares.size() - 1;
+            HBox childRow = new HBox(0, treeConnector(lastChild),
+                    shareGroup(child, share, children, visible, accessible));
+            childRow.setAlignment(Pos.TOP_LEFT);
+            childRow.setMinHeight(lastChild ? 18 : 22);
+            nested.getChildren().add(childRow);
         }
-        nested.setPadding(new Insets(2, 0, 3, 10));
+        nested.setPadding(new Insets(0, 0, 4, 12));
         nested.setVisible(false);
         nested.setManaged(false);
         long available = subshares.stream().filter(accessible::contains).count();
@@ -689,11 +696,32 @@ public class SambaManagerApp extends Application {
             toggle.setText(expanded ? "▾" : "▸");
             toggle.setAccessibleText((expanded ? "Ocultar" : "Mostrar") + " subpastas de " + share);
         });
-        Label count = new Label(available > 0 ? "(" + available + " disponível)" : "(" + subshares.size() + " subpasta)");
+        Label count = new Label(available > 0
+                ? "(" + available + (available == 1 ? " disponível)" : " disponíveis)")
+                : "(" + subshares.size() + (subshares.size() == 1 ? " subpasta)" : " subpastas)"));
         count.setStyle("-fx-text-fill: #707070; -fx-font-size: 10px;");
         HBox header = new HBox(2, toggle, row, count);
         header.setAlignment(Pos.CENTER_LEFT);
-        return new VBox(3, header, nested);
+        return new VBox(0, header, nested);
+    }
+
+    private Pane treeConnector(boolean lastChild) {
+        Pane connector = new Pane();
+        connector.setMinWidth(22);
+        connector.setPrefWidth(22);
+        connector.setMaxWidth(22);
+        connector.setMaxHeight(Double.MAX_VALUE);
+        connector.setMouseTransparent(true);
+
+        Line trunk = new Line(9.5, 0, 9.5, 10);
+        if (!lastChild) trunk.endYProperty().bind(connector.heightProperty());
+        Line arm = new Line(9.5, 10, 21, 10);
+        for (Line segment : List.of(trunk, arm)) {
+            segment.setStroke(Color.web("#9aa7b3"));
+            segment.setStrokeWidth(1);
+        }
+        connector.getChildren().addAll(trunk, arm);
+        return connector;
     }
 
     private void offerRestart() {

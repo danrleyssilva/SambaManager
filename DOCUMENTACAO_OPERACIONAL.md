@@ -415,6 +415,8 @@ Na lista visual, um compartilhamento cujo nome começa com o nome exato de outro
 
 Itens que agrupam subpastas exibem o mesmo checkbox da lista no estado intermediário, com um quadrado preto interno em vez do X ou de um visto. Esse estado sinaliza apenas "grupo expansível": a permissão real do compartilhamento pai fica armazenada separadamente e não é inferida do checkbox, portanto o mapeamento só usa permissões verificadas.
 
+Ao expandir um grupo, as subpastas aparecem recuadas e ligadas por linhas contínuas, como em uma árvore. O nome repetido do compartilhamento pai é omitido apenas na apresentação; o nome SMB completo continua sendo usado na verificação e no mapeamento.
+
 Se essa mesma conta Windows/Samba já tiver unidades lembradas de `192.168.0.93`, o aplicativo mapeia automaticamente os compartilhamentos **novos** que ela pode acessar, sem apagar ou renumerar as unidades existentes. A nova letra é salva para reconexão no próximo login do Windows. Quem ainda não tiver mapeamentos deve clicar em **Mapear pastas** após entrar. O comportamento administrativo continua especial: a conta com acesso a `Administracao` mapeia somente esse compartilhamento raiz.
 
 Para ativar essa função, atualize primeiro `server/samba_password_wsgi.py` no servidor conforme a seção 7 e reinicie `samba-password-gunicorn`. Confirme:

@@ -1,0 +1,7 @@
+{
+    "version":  "6.6",
+    "downloadUrl":  "https://192.168.0.93:8443/releases/RoyalServerAccess-6.6.exe",
+    "sha256":  "f11870f7051c639fc16555898a92b525fde2f236d183dc6de936361949de6566",
+    "required":  false,
+    "notes":  "Reconhecimento de subdiretórios e melhorias visuais."
+}
